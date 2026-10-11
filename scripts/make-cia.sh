@@ -9,7 +9,7 @@ if [ ! -x "$TOOLS/makerom" ] || [ ! -x "$TOOLS/bannertool" ]; then
     exit 0
 fi
 "$TOOLS/bannertool" makebanner -i "$ROOT/resources/banner.png" -a "$ROOT/resources/banner.wav" -o "$OUT/banner.bnr"
-"$TOOLS/bannertool" makesmdh -s "Jelly3DS" -l "Jellyfin player with offline downloads" -p "Thomas Bonnici" \
+"$TOOLS/bannertool" makesmdh -s "Jelly3DS" -l "Jelly3DS" -p "Thomas Bonnici" \
     -i "$ROOT/resources/icon.png" -o "$OUT/icon.icn"
 "$TOOLS/makerom" -f cia -o "$OUT/Jelly3DS.cia" -target t -exefslogo \
     -elf "$OUT/jelly3ds.elf" -rsf "$ROOT/resources/jelly3ds.rsf" \

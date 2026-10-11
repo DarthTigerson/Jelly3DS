@@ -50,8 +50,11 @@ AccessControlInfo:
   EnableL2Cache                 : true
   CanAccessCore2                : true
 
+  # DSP memory must be writable: ndspInit writes to it (read-only crashed on boot).
+  IORegisterMapping:
+    - 1ff00000-1ff7ffff   # DSP memory
   MemoryMapping:
-    - 0x1FF00000-0x1FF7FFFF:r # DSP memory
+    - 1f000000-1f5fffff:r # VRAM
 
   SystemCallAccess:
     ControlMemory: 1

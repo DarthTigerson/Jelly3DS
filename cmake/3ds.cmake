@@ -36,7 +36,7 @@ target_link_libraries(jelly3ds PRIVATE
 
 ctr_generate_smdh(${CMAKE_CURRENT_BINARY_DIR}/jelly3ds.smdh
     NAME "Jelly3DS"
-    DESCRIPTION "Jellyfin player with offline downloads"
+    DESCRIPTION "Jelly3DS"
     AUTHOR "Thomas Bonnici"
     ICON ${CMAKE_SOURCE_DIR}/resources/icon.png
 )
