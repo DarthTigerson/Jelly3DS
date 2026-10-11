@@ -1,0 +1,4 @@
+build/
+third_party/ffmpeg-3ds/
+cli-data/
+.DS_Store
