@@ -70,6 +70,8 @@ public:
     /// Writes resume position / played flag with the real (offline) watch time. Jellyfin 10.9+.
     Result<bool> updateUserData(const std::string& itemId, int64_t positionTicks, bool played, int64_t lastPlayedAt);
     Result<std::vector<Item>> itemsByIds(const std::vector<std::string>& ids);
+    /// Intro start/end ticks from Jellyfin's media segments (needs an intro-detection plugin on the server).
+    Result<std::pair<int64_t, int64_t>> introSegment(const std::string& itemId);
 
     /// `type`: "Primary", "Backdrop" or "Thumb".
     std::string imageUrl(const std::string& itemId, const std::string& tag, int maxWidth, int maxHeight,

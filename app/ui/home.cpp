@@ -1,4 +1,5 @@
 #include "cover_page.hpp"
+#include "downloads_page.hpp"
 #include "screens.hpp"
 
 #include "jelly/util.hpp"
@@ -53,6 +54,11 @@ public:
             return;
         }
 
+        if (tab_ == DOWNLOADS) {
+            if (++frames_ % 20 == 0) downloadsPage_.refresh();  // live progress
+            downloadsPage_.update(in);
+            return;
+        }
         if (tab_ == CONTINUE) {
             continue_.update(in);
             if (++frames_ % 30 == 0) continue_.refreshBadges();  // download progress
@@ -74,8 +80,11 @@ public:
     void drawTop(Gfx& g) override {
         auto& a = App::get();
         std::string status = a.online() ? a.config.userName : (a.wifiConnected() ? "Server unreachable" : "Offline");
+        if (tab_ == DOWNLOADS) status = downloadsPage_.headerText();
         drawHeader(g, std::string("Jelly3DS \xC2\xB7 ") + TAB_NAMES[tab_], status);
-        if (tab_ == CONTINUE)
+        if (tab_ == DOWNLOADS)
+            downloadsPage_.drawTop(g, 28, LIST_H);
+        else if (tab_ == CONTINUE)
             continue_.drawTop(g, 28, LIST_H);
         else if (loading_)
             drawLoading(g, 0, 28, TOP_W, LIST_H);
@@ -99,6 +108,10 @@ public:
         }
         if (tab_ == CONTINUE) {
             continue_.drawBottom(g, TAB_H);
+            return;
+        }
+        if (tab_ == DOWNLOADS) {
+            downloadsPage_.drawBottom(g, TAB_H);
             return;
         }
         if (tab_ == LIBRARIES) {
@@ -208,7 +221,7 @@ private:
         list_.thumbW = tab_ == SETTINGS ? 0 : 64;
         list_.rowHeight = tab_ == SETTINGS ? 40 : 46;
         switch (tab_) {
-        case DOWNLOADS: buildDownloadRows(); break;
+        case DOWNLOADS: downloadsPage_.refresh(); break;
         case CONTINUE: loadContinue(); break;
         case LIBRARIES: loadLibraries(); break;
         case SETTINGS: buildSettingsRows(); break;
@@ -497,6 +510,7 @@ private:
     ListView list_;
     GridView grid_;
     CoverPage continue_{continueOptions()};
+    DownloadsPage downloadsPage_;
     HintStrip libraryHints_;
     std::map<std::string, std::vector<jelly::Item>> latest_;  // library id → recently added
     std::map<std::string, bool> latestLoading_;

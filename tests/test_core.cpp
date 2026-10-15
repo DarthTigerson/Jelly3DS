@@ -496,3 +496,65 @@ TEST_CASE("library queries carry sort and filters; latest reads a bare array") {
     CHECK(latest.value[0].officialRating == "PG");
     CHECK(latest.value[0].genres.at(0) == "Drama");
 }
+
+TEST_CASE("queue: move up, pause and retry all") {
+    DownloadFixture f;
+    DownloadOptions o{DeviceProfile::new3ds(), -1, -1};
+    f.dm.enqueue(episode("a", 1, 1), o);
+    f.dm.enqueue(episode("b", 1, 2), o);
+    f.dm.enqueue(episode("c", 1, 3), o);
+    f.dm.moveUp("c");
+    auto ids = [&] {
+        std::string s;
+        for (const auto& d : f.dm.items()) s += d.itemId;
+        return s;
+    };
+    CHECK(ids() == "acb");
+    f.dm.moveUp("a");  // already first: no change
+    CHECK(ids() == "acb");
+
+    f.dm.setPaused(true);
+    CHECK_FALSE(f.dm.active());
+    CHECK_FALSE(f.dm.runNext());
+    f.dm.setPaused(false);
+    CHECK(f.dm.active());
+    REQUIRE(f.dm.runNext());
+    CHECK(f.dm.find("a")->status == DownloadStatus::Completed);
+
+    f.videoBody = "x";  // next two fail
+    f.dm.runNext();
+    f.dm.runNext();
+    CHECK(f.dm.find("b")->status == DownloadStatus::Failed);
+    f.dm.retryFailed();
+    CHECK(f.dm.find("b")->status == DownloadStatus::Queued);
+    CHECK(f.dm.find("c")->status == DownloadStatus::Queued);
+}
+
+TEST_CASE("downloads save the show poster and intro timings for offline use") {
+    DownloadFixture f;
+    std::vector<std::string> urls;
+    f.http.handler = [&](const FakeHttp::Call& c) -> HttpResponse {
+        urls.push_back(c.url);
+        if (contains(c.url, "/MediaSegments/"))
+            return {200, R"({"Items":[{"Type":"Intro","StartTicks":350000000,"EndTicks":1300000000}]})", ""};
+        if (contains(c.url, "/Images/")) return {200, "jpg", ""};
+        if (contains(c.url, "/stream.ts")) return {200, f.videoBody, ""};
+        return {404, "", ""};
+    };
+    Item ep = episode("e1", 1, 1);
+    ep.seriesPrimaryImageTag = "ptag";
+    REQUIRE(f.dm.enqueue(ep, {DeviceProfile::new3ds(), -1, -1}));
+    f.dm.runNext();
+    auto d = f.dm.find("e1");
+    CHECK(d->introStartTicks == 350000000);
+    CHECK(d->introEndTicks == 1300000000);
+    CHECK(fileExists(f.dm.posterPath("e1")));
+    bool seriesPoster = false;
+    for (const auto& u : urls)
+        if (contains(u, "/Items/series1/Images/Primary") && contains(u, "tag=ptag")) seriesPoster = true;
+    CHECK(seriesPoster);
+    // Persisted across restarts.
+    DownloadManager again(f.client, f.http, f.dm.root());
+    again.load();
+    CHECK(again.find("e1")->introEndTicks == 1300000000);
+}

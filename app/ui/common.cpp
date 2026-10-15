@@ -251,6 +251,12 @@ void playDownload(const jelly::DownloadItem& d, bool fromStart) {
     r.seriesId = d.seriesId;
     r.runTimeTicks = d.runTimeTicks;
     r.localPath = App::get().downloads->videoPath(d.itemId);
+    r.seasonIndex = d.seasonIndex;
+    r.episodeIndex = d.episodeIndex;
+    if (d.introEndTicks > d.introStartTicks && d.introStartTicks >= 0) {
+        r.introStart = static_cast<double>(d.introStartTicks) / TICKS_PER_SECOND;
+        r.introEnd = static_cast<double>(d.introEndTicks) / TICKS_PER_SECOND;
+    }
     r.startSeconds = fromStart ? 0 : static_cast<double>(resumeTicks(d.itemId, nullptr)) / TICKS_PER_SECOND;
     App::get().push(makePlayerScreen(std::move(r)));
 }
@@ -274,6 +280,8 @@ void playItem(const jelly::Item& item, bool fromStart) {
                      std::to_string(item.indexNumber);
     r.seriesId = item.seriesId;
     r.runTimeTicks = item.runTimeTicks;
+    r.seasonIndex = item.parentIndexNumber;
+    r.episodeIndex = item.indexNumber;
     r.startSeconds = fromStart ? 0 : static_cast<double>(resumeTicks(item.id, &item.userData)) / TICKS_PER_SECOND;
     if (!item.mediaSources.empty()) {
         const auto& src = item.mediaSources.front();

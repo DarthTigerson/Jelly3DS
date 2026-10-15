@@ -38,5 +38,6 @@ public:
 /// Wall clock in unix seconds; injectable for tests.
 using ClockFn = std::function<int64_t()>;
 int64_t systemClock();
+int64_t systemClockMs();  // monotonic milliseconds
 
 }  // namespace jelly

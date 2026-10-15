@@ -65,6 +65,8 @@ public:
     bool wifiConnected() const { return wifi_; }
 
     void setBottomScreenOn(bool on);
+    /// Both backlights off until any button is pressed (saves battery while downloading).
+    void screensOff();
     bool bottomScreenOn() const { return bottomOn_; }
     /// Called by the player: true while video is playing (keeps the downloader polite on Old 3DS).
     void setPlaying(bool playing) { playing_ = playing; }
@@ -109,6 +111,11 @@ private:
     int touchStartX_ = 0, touchStartY_ = 0;
     int lastTouchX_ = 0, lastTouchY_ = 0;
     bool sleepBlocked_ = false;
+    bool lidDark_ = false;      // backlights off because the lid closed during a download
+    bool screensOff_ = false;   // backlights off on request
+    bool ptmSysm_ = false;
+    u64 nextLidPoll_ = 0;
+    void manageSleep();
     Thread downloadThread_;
     aptHookCookie aptCookie_{};
 };

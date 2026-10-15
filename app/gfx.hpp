@@ -73,6 +73,10 @@ public:
     /// Four corner colours: top-left, top-right, bottom-left, bottom-right.
     void gradient(float x, float y, float w, float h, u32 tl, u32 tr, u32 bl, u32 br);
     void outline(float x, float y, float w, float h, u32 c, float thickness = 1);
+    void circle(float cx, float cy, float r, u32 c);
+    void triangle(float x0, float y0, float x1, float y1, float x2, float y2, u32 c);
+    /// Small speaker glyph (volume), drawn with primitives so it never depends on the font.
+    void speaker(float x, float y, float size, u32 c);
     void progressBar(float x, float y, float w, float h, float fraction, u32 fill, u32 back = color::panelHi);
 
 private:

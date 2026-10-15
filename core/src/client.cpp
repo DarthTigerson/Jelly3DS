@@ -185,6 +185,17 @@ Result<std::vector<Item>> Client::latest(const std::string& parentId, int limit)
     return Result<std::vector<Item>>::success(r.value.get<std::vector<Item>>());
 }
 
+Result<std::pair<int64_t, int64_t>> Client::introSegment(const std::string& itemId) {
+    auto r = getJson("/MediaSegments/" + itemId + "?" + buildQuery({{"includeSegmentTypes", "Intro"}}));
+    if (!r.ok) return Result<std::pair<int64_t, int64_t>>::failure(r.error);
+    for (const auto& seg : r.value.value("Items", nlohmann::json::array())) {
+        if (seg.value("Type", "") != "Intro") continue;
+        int64_t start = seg.value("StartTicks", int64_t{0}), end = seg.value("EndTicks", int64_t{0});
+        if (end > start) return Result<std::pair<int64_t, int64_t>>::success({start, end});
+    }
+    return Result<std::pair<int64_t, int64_t>>::failure("No intro");
+}
+
 Result<Item> Client::item(const std::string& id) {
     auto r = getJson("/Items/" + id + "?" + buildQuery({{"userId", uid()}}));
     if (!r.ok) r = getJson("/Users/" + uid() + "/Items/" + id);  // servers before 10.9

@@ -223,6 +223,21 @@ void Gfx::outline(float x, float y, float w, float h, u32 c, float t) {
     rect(x + w - t, y, t, h, c);
 }
 
+void Gfx::circle(float cx, float cy, float r, u32 c) { C2D_DrawCircleSolid(cx, cy, 0.5f, r, c); }
+
+void Gfx::triangle(float x0, float y0, float x1, float y1, float x2, float y2, u32 c) {
+    C2D_DrawTriangle(x0, y0, c, x1, y1, c, x2, y2, c, 0.5f);
+}
+
+void Gfx::speaker(float x, float y, float s, u32 c) {
+    // Box + cone, then two "sound waves" as bars of growing height.
+    rect(x, y + s * 0.35f, s * 0.22f, s * 0.3f, c);
+    triangle(x + s * 0.2f, y + s * 0.35f, x + s * 0.5f, y + s * 0.08f, x + s * 0.5f, y + s * 0.5f, c);
+    triangle(x + s * 0.2f, y + s * 0.65f, x + s * 0.5f, y + s * 0.5f, x + s * 0.5f, y + s * 0.92f, c);
+    rect(x + s * 0.62f, y + s * 0.38f, s * 0.09f, s * 0.24f, c);
+    rect(x + s * 0.8f, y + s * 0.25f, s * 0.09f, s * 0.5f, c);
+}
+
 void Gfx::progressBar(float x, float y, float w, float h, float fraction, u32 fill, u32 back) {
     if (fraction < 0) fraction = 0;
     if (fraction > 1) fraction = 1;

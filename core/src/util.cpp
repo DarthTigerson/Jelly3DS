@@ -18,6 +18,11 @@ int64_t systemClock() {
         .count();
 }
 
+int64_t systemClockMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
 std::string urlEncode(const std::string& s) {
     static const char* hex = "0123456789ABCDEF";
     std::string out;

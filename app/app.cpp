@@ -40,6 +40,8 @@ bool App::init() {
     if (socBuffer) socInit(socBuffer, SOC_BUFFER_SIZE);
     acInit();
     gspLcdInit();
+    ptmuInit();
+    ptmSysm_ = R_SUCCEEDED(ptmSysmInit());
     Player::initAudio();
     hidSetRepeatParameters(18, 5);
 
@@ -86,6 +88,9 @@ void App::shutdown() {
     if (!bottomOn_) setBottomScreenOn(true);
     aptSetSleepAllowed(true);
     Player::exitAudio();
+    if (lidDark_ || screensOff_) GSPLCD_PowerOnAllBacklights();
+    if (ptmSysm_) ptmSysmExit();
+    ptmuExit();
     gspLcdExit();
     acExit();
     socExit();
@@ -205,6 +210,39 @@ void App::downloadLoop() {
     }
 }
 
+void App::manageSleep() {
+    // Sleep mode suspends the app and its Wi-Fi, so while the queue runs the console must stay awake.
+    bool block = online_ && downloads->active();
+    if (block != sleepBlocked_) {
+        aptSetSleepAllowed(!block);
+        sleepBlocked_ = block;
+    }
+    u64 now = osGetTime();
+    if (now < nextLidPoll_) return;
+    nextLidPoll_ = now + 500;
+    u8 shell = 1;
+    PTMU_GetShellState(&shell);  // 0 = lid closed
+    bool closed = shell == 0;
+    if (closed && block && !lidDark_) {
+        GSPLCD_PowerOffAllBacklights();
+        lidDark_ = true;
+    } else if (!closed && lidDark_) {
+        GSPLCD_PowerOnAllBacklights();
+        if (!bottomOn_) GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_BOTTOM);
+        lidDark_ = false;
+    } else if (closed && lidDark_ && !block) {
+        // Queue finished with the lid shut: let the console sleep now.
+        GSPLCD_PowerOnAllBacklights();
+        lidDark_ = false;
+        if (ptmSysm_) PTMSYSM_RequestSleep();
+    }
+}
+
+void App::screensOff() {
+    GSPLCD_PowerOffAllBacklights();
+    screensOff_ = true;
+}
+
 void App::setBottomScreenOn(bool on) {
     bottomOn_ = on;
     if (on)
@@ -222,6 +260,12 @@ void App::readInput(Input& in) {
     in.tapped = false;
     in.touching = in.held & KEY_TOUCH;
 
+    if (screensOff_ && (in.down & ~KEY_TOUCH)) {
+        GSPLCD_PowerOnAllBacklights();
+        if (!bottomOn_) GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_BOTTOM);
+        screensOff_ = false;
+        in.down = 0;  // the wake-up press does nothing else
+    }
     // Any button wakes the bottom screen back up (except X, which toggles it in the player).
     if (!bottomOn_ && (in.down & ~(KEY_X | KEY_TOUCH)) && !(in.held & KEY_X)) {
         bool keepOff = !stack_.empty() && stack_.back()->keepsBottomOff();
@@ -274,12 +318,7 @@ void App::run() {
         applyNavigation();
         if (stack_.empty()) break;
 
-        // Keep the console awake while a download runs (closing the lid would cut Wi-Fi).
-        bool block = downloads->isDownloading();
-        if (block != sleepBlocked_) {
-            aptSetSleepAllowed(!block);
-            sleepBlocked_ = block;
-        }
+        manageSleep();
 
         gfx.beginFrame();
         images.pump();

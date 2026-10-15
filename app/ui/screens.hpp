@@ -43,6 +43,10 @@ struct PlayRequest {
     double startSeconds = 0;
     int audioStreamIndex = -1;
     int subtitleStreamIndex = -1;
+    double introStart = -1;  // seconds; -1 = unknown (fetched from the server when streaming)
+    double introEnd = -1;
+    int seasonIndex = 0;     // for finding the next episode
+    int episodeIndex = 0;
 };
 std::unique_ptr<Screen> makePlayerScreen(PlayRequest request);
 
