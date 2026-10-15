@@ -43,6 +43,8 @@ struct Item {
     std::string seriesName;
     std::string seasonId;
     std::string overview;
+    std::string officialRating;       // "PG-13"
+    std::vector<std::string> genres;
     int parentIndexNumber = 0;  // season number for episodes
     int indexNumber = 0;        // episode number
     int productionYear = 0;

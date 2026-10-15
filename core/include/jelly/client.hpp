@@ -30,6 +30,9 @@ struct ItemQuery {
     std::string searchTerm;
     int startIndex = 0;
     int limit = 200;
+    std::string sortBy = "SortName";     // SortName | DateCreated | ...
+    std::string sortOrder = "Ascending";
+    std::string filters;                 // e.g. "IsUnplayed"
 };
 
 struct ItemPage {
@@ -53,6 +56,8 @@ public:
     Result<std::vector<Item>> episodes(const std::string& seriesId, const std::string& seasonId = "");
     Result<std::vector<Item>> resumeItems();
     Result<std::vector<Item>> nextUp();
+    /// Newest additions to a library (what Jellyfin's home shows as "Latest").
+    Result<std::vector<Item>> latest(const std::string& parentId, int limit);
     Result<Item> item(const std::string& id);
 
     Result<bool> reportStart(const std::string& itemId, const std::string& mediaSourceId, int64_t positionTicks,

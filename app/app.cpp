@@ -107,6 +107,11 @@ void App::replaceAll(std::unique_ptr<Screen> s) {
     pendingPush_.push_back(std::move(s));
 }
 
+void App::goHome() {
+    pendingPush_.clear();
+    pendingPops_ = static_cast<int>(stack_.size()) - 1;
+}
+
 void App::applyNavigation() {
     bool changed = false;
     if (pendingReplace_) {
@@ -261,6 +266,10 @@ void App::run() {
         tasks.drainMain();
         if (stack_.empty()) break;
 
+        if ((in.down & KEY_START) && stack_.size() > 1 && stack_.back()->startGoesHome()) {
+            goHome();
+            in.down &= ~KEY_START;
+        }
         stack_.back()->update(in);
         applyNavigation();
         if (stack_.empty()) break;

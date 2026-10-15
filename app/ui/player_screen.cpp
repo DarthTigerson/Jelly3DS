@@ -30,6 +30,7 @@ public:
     }
 
     bool keepsBottomOff() const override { return bottomOff_; }
+    bool startGoesHome() const override { return false; }  // B stops playback (and saves the position)
 
     void onSuspend() override {
         if (player_ && state_ == State::Playing) {
@@ -70,6 +71,14 @@ public:
         if (in.repeat & KEY_L) seekBy(-60);
         if (in.repeat & KEY_R) seekBy(60);
         if (in.down & KEY_Y) osdPinned_ = !osdPinned_;
+        if (in.down & (KEY_UP | KEY_DOWN)) {
+            // Volume boost on the d-pad: the 3DS slider alone is often too quiet with headphones.
+            auto& cfg = App::get().config;
+            cfg.volumeBoost = std::max(1, std::min(3, cfg.volumeBoost + ((in.down & KEY_UP) ? 1 : -1)));
+            player_->setGain(static_cast<float>(cfg.volumeBoost));
+            App::get().saveConfig();
+            App::get().toast(cfg.volumeBoost == 1 ? "Volume boost off" : "Volume boost " + std::to_string(cfg.volumeBoost) + "\xC3\x97");
+        }
         if (in.down & KEY_X) toggleScreen();
         if (in.down & KEY_B) {
             finish();
@@ -243,6 +252,7 @@ private:
                     return;
                 }
                 player_ = p;
+                player_->setGain(static_cast<float>(App::get().config.volumeBoost));
                 state_ = State::Playing;
                 nextSave_ = osGetTime() + 10000;
                 showOsd();

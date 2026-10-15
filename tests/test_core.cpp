@@ -442,13 +442,57 @@ TEST_CASE("image URLs carry the image type") {
     CHECK(contains(client.imageUrl("e1", "", 64, 96), "/Items/e1/Images/Primary?"));
 }
 
-TEST_CASE("continue view choice is remembered") {
+TEST_CASE("cover view choice is remembered per page") {
     TempDir dir;
     Config c = loggedInConfig();
-    CHECK(c.continueView == "shelf");
-    c.continueView = "hero";
+    CHECK(c.view("continue", "shelf") == "shelf");
+    c.views["continue"] = "hero";
+    c.views["movies"] = "grid";
     REQUIRE(c.save(dir.path + "/c.json"));
     Config d;
     REQUIRE(d.load(dir.path + "/c.json"));
-    CHECK(d.continueView == "hero");
+    CHECK(d.view("continue", "shelf") == "hero");
+    CHECK(d.view("movies", "hero") == "grid");
+    CHECK(d.view("tvshows", "grid") == "grid");
+}
+
+TEST_CASE("volume boost defaults to 2x and is clamped") {
+    TempDir dir;
+    Config c = loggedInConfig();
+    CHECK(c.volumeBoost == 2);
+    c.volumeBoost = 3;
+    REQUIRE(c.save(dir.path + "/c.json"));
+    Config d;
+    REQUIRE(d.load(dir.path + "/c.json"));
+    CHECK(d.volumeBoost == 3);
+    REQUIRE(saveJson(dir.path + "/bad.json", nlohmann::json{{"volumeBoost", 9}}));
+    Config e;
+    REQUIRE(e.load(dir.path + "/bad.json"));
+    CHECK(e.volumeBoost == 3);
+}
+
+TEST_CASE("library queries carry sort and filters; latest reads a bare array") {
+    Config c = loggedInConfig();
+    FakeHttp http;
+    std::string lastUrl;
+    http.handler = [&](const FakeHttp::Call& call) -> HttpResponse {
+        lastUrl = call.url;
+        if (contains(call.url, "/Items/Latest")) return {200, R"([{"Id":"a","Name":"New","Type":"Movie","OfficialRating":"PG","Genres":["Drama"]}])", ""};
+        return {200, R"({"Items":[],"TotalRecordCount":0})", ""};
+    };
+    Client client(http, c, "t");
+    ItemQuery q;
+    q.parentId = "lib";
+    q.sortBy = "DateCreated";
+    q.sortOrder = "Descending";
+    q.filters = "IsUnplayed";
+    client.items(q);
+    CHECK(contains(lastUrl, "sortBy=DateCreated"));
+    CHECK(contains(lastUrl, "sortOrder=Descending"));
+    CHECK(contains(lastUrl, "filters=IsUnplayed"));
+    auto latest = client.latest("lib", 5);
+    REQUIRE(latest.ok);
+    REQUIRE(latest.value.size() == 1);
+    CHECK(latest.value[0].officialRating == "PG");
+    CHECK(latest.value[0].genres.at(0) == "Drama");
 }

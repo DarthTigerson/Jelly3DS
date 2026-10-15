@@ -71,6 +71,8 @@ void from_json(const nlohmann::json& j, Item& v) {
     v.seriesName = get<std::string>(j, "SeriesName", "");
     v.seasonId = get<std::string>(j, "SeasonId", "");
     v.overview = get<std::string>(j, "Overview", "");
+    v.officialRating = get<std::string>(j, "OfficialRating", "");
+    v.genres = get<std::vector<std::string>>(j, "Genres", {});
     v.parentIndexNumber = get<int>(j, "ParentIndexNumber", 0);
     v.indexNumber = get<int>(j, "IndexNumber", 0);
     v.productionYear = get<int>(j, "ProductionYear", 0);

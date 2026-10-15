@@ -52,7 +52,7 @@ std::string Client::deviceId() const {
 }
 
 std::string Client::fields() const {
-    return "Overview,MediaSources,ChildCount,ProductionYear,ParentId";
+    return "Overview,MediaSources,ChildCount,ProductionYear,ParentId,Genres,OfficialRating";
 }
 
 Result<nlohmann::json> Client::getJson(const std::string& pathAndQuery) {
@@ -125,13 +125,14 @@ Result<ItemPage> Client::items(const ItemQuery& q) {
     std::vector<std::pair<std::string, std::string>> params = {
         {"userId", uid()},
         {"fields", fields()},
-        {"sortBy", "SortName"},
-        {"sortOrder", "Ascending"},
+        {"sortBy", q.sortBy},
+        {"sortOrder", q.sortOrder},
         {"startIndex", std::to_string(q.startIndex)},
         {"limit", std::to_string(q.limit)},
-        {"enableImageTypes", "Primary"},
+        {"enableImageTypes", "Primary,Backdrop,Thumb"},
         {"imageTypeLimit", "1"},
     };
+    if (!q.filters.empty()) params.emplace_back("filters", q.filters);
     if (!q.parentId.empty()) params.emplace_back("parentId", q.parentId);
     if (!q.includeItemTypes.empty()) params.emplace_back("includeItemTypes", q.includeItemTypes);
     if (q.recursive) params.emplace_back("recursive", "true");
@@ -170,6 +171,18 @@ Result<std::vector<Item>> Client::nextUp() {
     auto r = getJson("/Shows/NextUp?" + buildQuery({{"userId", uid()}, {"fields", fields()}, {"limit", "20"}}));
     if (!r.ok) return Result<std::vector<Item>>::failure(r.error);
     return Result<std::vector<Item>>::success(r.value.value("Items", nlohmann::json::array()).get<std::vector<Item>>());
+}
+
+Result<std::vector<Item>> Client::latest(const std::string& parentId, int limit) {
+    auto r = getJson("/Items/Latest?" + buildQuery({{"userId", uid()},
+                                                    {"parentId", parentId},
+                                                    {"limit", std::to_string(limit)},
+                                                    {"fields", fields()},
+                                                    {"groupItems", "true"}}));
+    if (!r.ok) return Result<std::vector<Item>>::failure(r.error);
+    // This endpoint returns a bare array, not {"Items": [...]}.
+    if (!r.value.is_array()) return Result<std::vector<Item>>::success({});
+    return Result<std::vector<Item>>::success(r.value.get<std::vector<Item>>());
 }
 
 Result<Item> Client::item(const std::string& id) {

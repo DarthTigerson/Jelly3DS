@@ -292,7 +292,7 @@ void toggleWatched(const std::string& itemId, bool played, int64_t runTimeTicks)
     a.toast(played ? "Marked as watched" : "Marked as unwatched");
 }
 
-void openItemMenu(const jelly::Item& item) {
+void openItemMenu(const jelly::Item& item, std::vector<MenuOption> extra) {
     auto& a = App::get();
     std::vector<MenuOption> opts;
     int64_t resume = resumeTicks(item.id, &item.userData);
@@ -304,7 +304,8 @@ void openItemMenu(const jelly::Item& item) {
     }
     auto d = a.downloads->find(item.id);
     if (!d) {
-        opts.push_back({"Download\xE2\x80\xA6", [item] { App::get().push(makeDownloadOptions({item})); }, a.online()});
+        opts.push_back({item.type == "Episode" ? "Download episode" : "Download", [item] { App::get().push(makeDownloadOptions({item})); },
+                        a.online()});
     } else if (d->status == DownloadStatus::Completed) {
         std::string id = item.id;
         opts.push_back({"Delete download", [id] {
@@ -324,7 +325,37 @@ void openItemMenu(const jelly::Item& item) {
     std::string id = item.id;
     int64_t rt = item.runTimeTicks;
     opts.push_back({played ? "Mark as unwatched" : "Mark as watched", [id, played, rt] { toggleWatched(id, !played, rt); }});
+    for (auto& o : extra) opts.push_back(std::move(o));
     a.push(makeMenu(item.label(), std::move(opts)));
+}
+
+void downloadItems(std::vector<jelly::Item> items) {
+    std::vector<jelly::Item> todo;
+    for (auto& i : items)
+        if (i.isPlayable() && !App::get().downloads->status(i.id)) todo.push_back(std::move(i));
+    if (todo.empty()) {
+        App::get().toast("Already downloaded");
+        return;
+    }
+    App::get().push(makeDownloadOptions(std::move(todo)));
+}
+
+void downloadSeries(const std::string& seriesId, const std::string& seasonId) {
+    auto& a = App::get();
+    if (!a.online()) {
+        a.toast("Downloading needs your server");
+        return;
+    }
+    a.toast("Fetching episodes\xE2\x80\xA6");
+    a.tasks.run([seriesId, seasonId] {
+        auto r = App::get().client->episodes(seriesId, seasonId);
+        App::get().tasks.post([r]() mutable {
+            if (r.ok)
+                downloadItems(std::move(r.value));
+            else
+                App::get().toast(r.error);
+        });
+    });
 }
 
 void openDownloadMenu(const jelly::DownloadItem& d) {

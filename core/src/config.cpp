@@ -1,6 +1,8 @@
 #include "jelly/config.hpp"
 #include "jelly/util.hpp"
 
+#include <algorithm>
+
 namespace jelly {
 
 static const char* profileName(ProfileChoice p) {
@@ -24,7 +26,11 @@ bool Config::load(const std::string& path) {
     audioLanguage = j.value("audioLanguage", "");
     subtitleLanguage = j.value("subtitleLanguage", "");
     verifyTls = j.value("verifyTls", false);
-    continueView = j.value("continueView", "shelf");
+    volumeBoost = std::max(1, std::min(3, j.value("volumeBoost", 2)));
+    views.clear();
+    if (j.contains("views") && j["views"].is_object())
+        for (auto& [k, v] : j["views"].items())
+            if (v.is_string()) views[k] = v.get<std::string>();
     return true;
 }
 
@@ -34,7 +40,8 @@ bool Config::save(const std::string& path) const {
         {"userName", userName},           {"accessToken", accessToken},
         {"deviceId", deviceId},           {"profile", profileName(profile)},
         {"audioLanguage", audioLanguage}, {"subtitleLanguage", subtitleLanguage},
-        {"verifyTls", verifyTls},         {"continueView", continueView},
+        {"verifyTls", verifyTls},         {"views", views},
+        {"volumeBoost", volumeBoost},
     };
     return saveJson(path, j);
 }

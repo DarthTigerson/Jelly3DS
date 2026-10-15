@@ -16,7 +16,9 @@ namespace app {
 // --- Screens ---------------------------------------------------------------------------------
 std::unique_ptr<Screen> makeLoginScreen();
 std::unique_ptr<Screen> makeHomeScreen();
+/// Shows / movies libraries get the cover browser; other folders a plain grid.
 std::unique_ptr<Screen> makeFolderScreen(const jelly::Item& folder);
+std::unique_ptr<Screen> makePlainFolderScreen(const jelly::Item& folder);
 std::unique_ptr<Screen> makeSeriesScreen(const jelly::Item& series);
 std::unique_ptr<Screen> makeEpisodesScreen(const jelly::Item& series, const jelly::Item& season);
 std::unique_ptr<Screen> makeDownloadOptions(std::vector<jelly::Item> items);
@@ -53,8 +55,12 @@ bool isPlayed(const std::string& itemId, const jelly::UserData* server);
 /// Plays an item: from the SD card when downloaded, otherwise streamed (needs the server).
 void playItem(const jelly::Item& item, bool fromStart);
 void playDownload(const jelly::DownloadItem& d, bool fromStart);
-/// Action menu for a playable item (resume / play / download / watched).
-void openItemMenu(const jelly::Item& item);
+/// Action menu for a playable item (resume / play / download / watched); `extra` options are appended.
+void openItemMenu(const jelly::Item& item, std::vector<MenuOption> extra = {});
+/// Opens the download options for every episode/movie in `items` not already downloaded.
+void downloadItems(std::vector<jelly::Item> items);
+/// Fetches a series' (or one season's) episodes, then opens the download options for them.
+void downloadSeries(const std::string& seriesId, const std::string& seasonId = "");
 /// Action menu for a downloaded item (works offline).
 void openDownloadMenu(const jelly::DownloadItem& d);
 void toggleWatched(const std::string& itemId, bool played, int64_t runTimeTicks);

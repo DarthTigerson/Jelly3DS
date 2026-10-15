@@ -189,10 +189,7 @@ void GridView::draw(Gfx& g, float x, float y, float w, float h) {
         if (sel) g.rect(cx - 3, cy - 3, posterW + 6, posterH + 6, color::accent);
         g.rect(cx, cy, posterW, posterH, color::panel);
         if (const Texture* t = App::get().images.get(it.image)) {
-            // Fill the poster box (crop the overflow by drawing centred at cover scale).
-            float s = std::min(posterW / t->width, posterH / t->height);
-            float dw = t->width * s, dh = t->height * s;
-            g.image(*t, cx + (posterW - dw) / 2, cy + (posterH - dh) / 2, dw, dh);
+            g.imageCover(*t, cx, cy, posterW, posterH);
         } else {
             g.wrapped(it.title, cx + 4, cy + 6, 0.4f, color::dim, posterW - 8, 5);
         }

@@ -50,6 +50,8 @@ public:
     void push(std::unique_ptr<Screen> s);
     void pop();
     void replaceAll(std::unique_ptr<Screen> s);
+    /// Pops everything above the root (Home) screen.
+    void goHome();
 
     void toast(const std::string& message);
     void saveConfig();
@@ -123,6 +125,8 @@ public:
     virtual bool overlay() const { return false; }
     /// Player sleep/suspend hook.
     virtual void onSuspend() {}
+    /// START returns to the Home screen from here (the player opts out: B stops it properly).
+    virtual bool startGoesHome() const { return true; }
     /// True while the screen wants the bottom backlight to stay off (headphone mode in the player).
     virtual bool keepsBottomOff() const { return false; }
 

@@ -1,6 +1,7 @@
 #include "player.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -154,34 +155,38 @@ constexpr u32 TRANSFER_FLAGS = GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(
                                GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGB565) |
                                GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565) | GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO);
 
-inline int16_t toS16(float v) {
-    v *= 32767.0f;
-    if (v > 32767.0f) return 32767;
-    if (v < -32768.0f) return -32768;
-    return static_cast<int16_t>(v);
+/// Applies the volume boost, then a soft limiter: linear up to 0.8, smoothly approaching 1.0 above it,
+/// so a boosted loud scene is compressed instead of clipping into crackle.
+inline int16_t toS16(float v, float gain) {
+    v *= gain;
+    const float knee = 0.8f;
+    float mag = std::fabs(v);
+    if (mag > knee) v = std::copysign(knee + (1 - knee) * std::tanh((mag - knee) / (1 - knee)), v);
+    return static_cast<int16_t>(v * 32767.0f);
 }
 
 /// Converts any decoded audio frame to interleaved stereo s16.
-void appendStereo(const AVFrame* f, std::vector<int16_t>& out) {
+void appendStereo(const AVFrame* f, std::vector<int16_t>& out, float gain) {
     const int n = f->nb_samples;
     const int ch = f->ch_layout.nb_channels;
     const int l = 0, r = ch > 1 ? 1 : 0;
+    constexpr float S16 = 1.0f / 32768.0f;
     out.reserve(out.size() + n * 2);
     switch (f->format) {
     case AV_SAMPLE_FMT_FLTP: {
         auto* a = reinterpret_cast<const float*>(f->data[l]);
         auto* b = reinterpret_cast<const float*>(f->data[r]);
         for (int i = 0; i < n; ++i) {
-            out.push_back(toS16(a[i]));
-            out.push_back(toS16(b[i]));
+            out.push_back(toS16(a[i], gain));
+            out.push_back(toS16(b[i], gain));
         }
         break;
     }
     case AV_SAMPLE_FMT_FLT: {
         auto* a = reinterpret_cast<const float*>(f->data[0]);
         for (int i = 0; i < n; ++i) {
-            out.push_back(toS16(a[i * ch + l]));
-            out.push_back(toS16(a[i * ch + r]));
+            out.push_back(toS16(a[i * ch + l], gain));
+            out.push_back(toS16(a[i * ch + r], gain));
         }
         break;
     }
@@ -189,16 +194,16 @@ void appendStereo(const AVFrame* f, std::vector<int16_t>& out) {
         auto* a = reinterpret_cast<const int16_t*>(f->data[l]);
         auto* b = reinterpret_cast<const int16_t*>(f->data[r]);
         for (int i = 0; i < n; ++i) {
-            out.push_back(a[i]);
-            out.push_back(b[i]);
+            out.push_back(toS16(a[i] * S16, gain));
+            out.push_back(toS16(b[i] * S16, gain));
         }
         break;
     }
     case AV_SAMPLE_FMT_S16: {
         auto* a = reinterpret_cast<const int16_t*>(f->data[0]);
         for (int i = 0; i < n; ++i) {
-            out.push_back(a[i * ch + l]);
-            out.push_back(a[i * ch + r]);
+            out.push_back(toS16(a[i * ch + l] * S16, gain));
+            out.push_back(toS16(a[i * ch + r] * S16, gain));
         }
         break;
     }
@@ -262,7 +267,10 @@ size_t PacketQueue::size() const {
 
 bool Player::initAudio() {
     audioAvailable_ = R_SUCCEEDED(ndspInit());
-    if (audioAvailable_) ndspSetOutputMode(NDSP_OUTPUT_STEREO);
+    if (audioAvailable_) {
+        ndspSetOutputMode(NDSP_OUTPUT_STEREO);
+        ndspSetMasterVol(1.0f);
+    }
     return audioAvailable_;
 }
 
@@ -769,7 +777,7 @@ void Player::audioLoop() {
                     continue;
                 }
                 if (pending.empty()) pendingPts = pts;
-                appendStereo(frame, pending);
+                appendStereo(frame, pending, gain_);
                 av_frame_unref(frame);
             }
         }
