@@ -39,11 +39,15 @@ public:
         if (newTab != tab_) {
             tab_ = static_cast<Tab>(newTab);
             list_.selected = 0;
+            grid_.selected = 0;
             reload();
             return;
         }
 
-        list_.update(in, LIST_H);
+        if (tab_ == LIBRARIES)
+            grid_.update(in);
+        else
+            list_.update(in, LIST_H);
         buildButtons();
         if (buttons_.update(in)) return;
 
@@ -58,6 +62,8 @@ public:
         drawHeader(g, std::string("Jelly3DS \xC2\xB7 ") + TAB_NAMES[tab_], status);
         if (loading_)
             drawLoading(g, 0, 28, TOP_W, LIST_H);
+        else if (tab_ == LIBRARIES)
+            grid_.draw(g, 0, 28, TOP_W, LIST_H);
         else
             list_.draw(g, 0, 28, TOP_W, LIST_H);
     }
@@ -73,7 +79,7 @@ public:
         }
         g.text(std::string(glyph::L) + "/" + glyph::R, 4, TAB_H + 2, 0.38f, color::dim);
 
-        const ListRow* row = list_.current();
+        const ListRow* row = currentRow();
         float top = TAB_H + 2, bottom = SCREEN_H - ButtonBar::HEIGHT;
         if (tab_ == DOWNLOADS && row && row->tag >= 0 && row->tag < static_cast<int>(downloads_.size())) {
             const auto& d = downloads_[row->tag];
@@ -92,10 +98,13 @@ public:
 private:
     static constexpr float LIST_H = SCREEN_H - 28;
 
+    const ListRow* currentRow() const { return tab_ == LIBRARIES ? grid_.current() : list_.current(); }
+
     void reload() {
         message_.clear();
         detail_.invalidate();
-        list_.thumbW = tab_ == SETTINGS ? 0 : 28;
+        list_.thumbW = tab_ == SETTINGS ? 0 : 64;
+        list_.rowHeight = tab_ == SETTINGS ? 40 : 46;
         switch (tab_) {
         case DOWNLOADS: buildDownloadRows(); break;
         case CONTINUE: loadContinue(); break;
@@ -154,7 +163,7 @@ private:
                 r.badge = "WATCHED";
                 r.badgeColor = color::dim;
             }
-            r.image = thumbFor(d, 28, 34);
+            r.image = thumbFor(d, 64, 36);
             rows.push_back(std::move(r));
         }
         list_.emptyText = "No downloads yet - find an episode and choose Download";
@@ -201,10 +210,10 @@ private:
     void loadLibraries() {
         auto& a = App::get();
         items_.clear();
-        list_.setRows({});
+        grid_.setItems({});
         if (!a.online()) {
             loading_ = false;
-            list_.emptyText = "Offline - libraries need your server";
+            grid_.emptyText = "Offline - libraries need your server";
             return;
         }
         loading_ = true;
@@ -213,15 +222,15 @@ private:
                                                            if (tab_ != LIBRARIES) return;
                                                            loading_ = false;
                                                            if (!r.ok) {
-                                                               list_.emptyText = r.error;
+                                                               grid_.emptyText = r.error;
                                                                return;
                                                            }
                                                            items_ = std::move(r.value);
                                                            std::vector<ListRow> rows;
                                                            for (size_t i = 0; i < items_.size(); ++i)
                                                                rows.push_back(itemRow(items_[i], static_cast<int>(i)));
-                                                           list_.emptyText = "No libraries";
-                                                           list_.setRows(std::move(rows));
+                                                           grid_.emptyText = "No libraries";
+                                                           grid_.setItems(std::move(rows));
                                                        });
     }
 
@@ -242,7 +251,7 @@ private:
         r.badgeColor = badge.color;
         int64_t resume = resumeTicks(item.id, &item.userData);
         if (resume > 0 && item.runTimeTicks > 0) r.progress = static_cast<float>(resume) / item.runTimeTicks;
-        r.image = posterFor(item, 28, 34);
+        r.image = tab_ == LIBRARIES ? posterFor(item, 64, 96) : posterFor(item, 64, 36);
         return r;
     }
 
@@ -334,7 +343,7 @@ private:
     void buildButtons() {
         auto& a = App::get();
         buttons_.buttons.clear();
-        const ListRow* row = list_.current();
+        const ListRow* row = currentRow();
         switch (tab_) {
         case DOWNLOADS:
             if (row && row->tag >= 0 && row->tag < static_cast<int>(downloads_.size())) {
@@ -380,6 +389,7 @@ private:
 
     Tab tab_ = DOWNLOADS;
     ListView list_;
+    GridView grid_;
     ButtonBar buttons_;
     DetailCache detail_;
     std::vector<jelly::DownloadItem> downloads_;

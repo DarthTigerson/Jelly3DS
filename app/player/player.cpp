@@ -149,7 +149,8 @@ int64_t avioSeek(void* opaque, int64_t offset, int whence) {
     return static_cast<ByteSource*>(opaque)->seek(offset, whence);
 }
 
-constexpr u32 TRANSFER_FLAGS = GX_TRANSFER_FLIP_VERT(1) | GX_TRANSFER_OUT_TILED(1) | GX_TRANSFER_RAW_COPY(0) |
+// No vertical flip: texture memory row 0 is the top of the image (sampled at v = 1.0).
+constexpr u32 TRANSFER_FLAGS = GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(1) | GX_TRANSFER_RAW_COPY(0) |
                                GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGB565) |
                                GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565) | GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO);
 

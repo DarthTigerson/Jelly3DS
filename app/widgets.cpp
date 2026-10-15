@@ -138,6 +138,75 @@ void ListView::draw(Gfx& g, float x, float y, float w, float h) {
     }
 }
 
+void GridView::setItems(std::vector<ListRow> r, bool keepSelection) {
+    items = std::move(r);
+    if (!keepSelection) {
+        selected = 0;
+        scroll_ = 0;
+    }
+    if (selected >= static_cast<int>(items.size())) selected = std::max(0, static_cast<int>(items.size()) - 1);
+}
+
+const ListRow* GridView::current() const {
+    if (selected < 0 || selected >= static_cast<int>(items.size())) return nullptr;
+    return &items[selected];
+}
+
+bool GridView::update(const Input& in) {
+    int n = static_cast<int>(items.size());
+    if (n == 0) return false;
+    int before = selected;
+    if (in.repeat & KEY_RIGHT) selected = std::min(n - 1, selected + 1);
+    if (in.repeat & KEY_LEFT) selected = std::max(0, selected - 1);
+    if (in.repeat & KEY_DOWN) selected = std::min(n - 1, selected + columns);
+    if (in.repeat & KEY_UP) selected = std::max(0, selected - columns);
+    return selected != before;
+}
+
+void GridView::draw(Gfx& g, float x, float y, float w, float h) {
+    if (items.empty()) {
+        g.text(emptyText, x + w / 2, y + h / 2 - 10, 0.55f, color::dim, Align::Center);
+        return;
+    }
+    const float cellW = w / columns;
+    const float cellH = posterH + 26;
+    // Keep the selected row in view, easing like the list.
+    int row = selected / columns;
+    float target = scroll_;
+    if (row * cellH < target) target = row * cellH;
+    if ((row + 1) * cellH > target + h) target = (row + 1) * cellH - h;
+    int rows = (static_cast<int>(items.size()) + columns - 1) / columns;
+    target = std::min(std::max(0.0f, target), std::max(0.0f, rows * cellH - h));
+    scroll_ += (target - scroll_) * 0.35f;
+    if (std::fabs(target - scroll_) < 0.5f) scroll_ = target;
+
+    for (int i = 0; i < static_cast<int>(items.size()); ++i) {
+        float cy = y + (i / columns) * cellH - scroll_ + 6;
+        if (cy + cellH < y || cy > y + h) continue;
+        float cx = x + (i % columns) * cellW + (cellW - posterW) / 2;
+        const auto& it = items[i];
+        bool sel = i == selected;
+        if (sel) g.rect(cx - 3, cy - 3, posterW + 6, posterH + 6, color::accent);
+        g.rect(cx, cy, posterW, posterH, color::panel);
+        if (const Texture* t = App::get().images.get(it.image)) {
+            // Fill the poster box (crop the overflow by drawing centred at cover scale).
+            float s = std::min(posterW / t->width, posterH / t->height);
+            float dw = t->width * s, dh = t->height * s;
+            g.image(*t, cx + (posterW - dw) / 2, cy + (posterH - dh) / 2, dw, dh);
+        } else {
+            g.wrapped(it.title, cx + 4, cy + 6, 0.4f, color::dim, posterW - 8, 5);
+        }
+        if (it.progress >= 0) g.progressBar(cx, cy + posterH - 3, posterW, 3, it.progress, color::accent2, color::shade);
+        if (!it.badge.empty()) {
+            float bw = g.textWidth(it.badge, 0.34f) + 6;
+            g.rect(cx + posterW - bw, cy, bw, 13, color::shade);
+            g.text(it.badge, cx + posterW - bw + 3, cy + 1, 0.34f, it.badgeColor);
+        }
+        g.text(it.title, cx + posterW / 2, cy + posterH + 4, 0.4f, sel ? color::text : color::dim, Align::Center,
+               cellW - 4);
+    }
+}
+
 bool ButtonBar::update(const Input& in) {
     if (buttons.empty()) return false;
     float w = static_cast<float>(BOTTOM_W) / buttons.size();

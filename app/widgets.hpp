@@ -43,6 +43,24 @@ private:
     float scroll_ = 0;
 };
 
+/// Poster shelf for the top screen: covers in a grid with titles, d-pad moves in 2D.
+class GridView {
+public:
+    std::vector<ListRow> items;  // uses title, badge, progress, image
+    int selected = 0;
+    int columns = 5;
+    float posterW = 64, posterH = 96;
+    std::string emptyText = "Nothing here";
+
+    void setItems(std::vector<ListRow> r, bool keepSelection = true);
+    bool update(const Input& in);
+    void draw(Gfx& g, float x, float y, float w, float h);
+    const ListRow* current() const;
+
+private:
+    float scroll_ = 0;
+};
+
 struct Button {
     std::string label;
     u32 key = 0;  // keys that trigger it besides touch

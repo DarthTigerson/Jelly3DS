@@ -41,11 +41,9 @@ bool Texture::create(int w, int h) {
 void Texture::uploadRgb565(const uint16_t* pixels, int w, int h) {
     if (!valid) return;
     auto* dst = static_cast<uint16_t*>(tex.data);
-    // GPU textures are stored bottom-up (v = 0 is the first row in memory), so flip while swizzling.
-    for (int y = 0; y < h && y < tex.height; ++y) {
-        const u32 my = tex.height - 1 - y;
-        for (int x = 0; x < w && x < tex.width; ++x) dst[tileOffset(x, my, tex.width)] = pixels[y * w + x];
-    }
+    // Texture memory row 0 is the top of the image (sampled at v = 1.0, matching sub.top = 1.0).
+    for (int y = 0; y < h && y < tex.height; ++y)
+        for (int x = 0; x < w && x < tex.width; ++x) dst[tileOffset(x, y, tex.width)] = pixels[y * w + x];
     C3D_TexFlush(&tex);
 }
 

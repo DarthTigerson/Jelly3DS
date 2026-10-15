@@ -20,7 +20,10 @@ public:
             App::get().pop();
             return;
         }
-        list_.update(in, SCREEN_H - 28);
+        if (grid_)
+            gridView_.update(in);
+        else
+            list_.update(in, SCREEN_H - 28);
         buildButtons();
         buttons_.update(in);
         if (++frames_ % 30 == 0 && hasActiveDownloads()) rebuildRows();
@@ -30,13 +33,16 @@ public:
         drawHeader(g, title_, App::get().online() ? "" : "Offline");
         if (loading_)
             drawLoading(g, 0, 28, TOP_W, SCREEN_H - 28);
+        else if (grid_)
+            gridView_.draw(g, 0, 28, TOP_W, SCREEN_H - 28);
         else
             list_.draw(g, 0, 28, TOP_W, SCREEN_H - 28);
     }
 
     void drawBottom(Gfx& g) override {
         if (const jelly::Item* item = selected())
-            drawDetail(g, detail_.get(list_.selected, [&] { return detailFor(*item); }), 0, SCREEN_H - ButtonBar::HEIGHT);
+            drawDetail(g, detail_.get(grid_ ? gridView_.selected : list_.selected, [&] { return detailFor(*item); }), 0,
+                       SCREEN_H - ButtonBar::HEIGHT);
         buttons_.draw(g);
     }
 
@@ -52,10 +58,14 @@ protected:
                            [this](ItemsResult r) {
                                loading_ = false;
                                if (!r.ok) {
-                                   list_.emptyText = r.error;
+                                   list_.emptyText = gridView_.emptyText = r.error;
                                    return;
                                }
                                items_ = std::move(r.value);
+                               // Posters for shows, movies, seasons and folders; a list for episodes.
+                               grid_ = !items_.empty() && std::none_of(items_.begin(), items_.end(), [](const jelly::Item& i) {
+                                   return i.type == "Episode";
+                               });
                                rebuildRows();
                                onLoaded();
                            });
@@ -63,7 +73,7 @@ protected:
     virtual void onLoaded() {}
 
     const jelly::Item* selected() const {
-        const ListRow* row = list_.current();
+        const ListRow* row = grid_ ? gridView_.current() : list_.current();
         if (!row || row->tag < 0 || row->tag >= static_cast<int>(items_.size())) return nullptr;
         return &items_[row->tag];
     }
@@ -94,8 +104,17 @@ protected:
     void rebuildRows() {
         detail_.invalidate();
         std::vector<ListRow> rows;
-        for (size_t i = 0; i < items_.size(); ++i) rows.push_back(rowFor(items_[i], static_cast<int>(i)));
-        list_.setRows(std::move(rows));
+        for (size_t i = 0; i < items_.size(); ++i) {
+            rows.push_back(rowFor(items_[i], static_cast<int>(i)));
+            if (grid_) {
+                rows.back().image = posterFor(items_[i], 64, 96);
+                rows.back().title = items_[i].name;
+            }
+        }
+        if (grid_)
+            gridView_.setItems(std::move(rows));
+        else
+            list_.setRows(std::move(rows));
     }
 
     bool hasActiveDownloads() const {
@@ -130,6 +149,8 @@ protected:
 
     std::string title_;
     ListView list_;
+    GridView gridView_;
+    bool grid_ = false;
     ButtonBar buttons_;
     DetailCache detail_;
     std::vector<jelly::Item> items_;
@@ -230,7 +251,8 @@ class EpisodesScreen : public ItemListScreen {
 public:
     EpisodesScreen(jelly::Item series, jelly::Item season)
         : ItemListScreen(series.name + " \xC2\xB7 " + season.name), series_(std::move(series)), season_(std::move(season)) {
-        list_.thumbW = 48;
+        list_.thumbW = 80;
+        list_.rowHeight = 52;
         start();
     }
 
@@ -242,7 +264,7 @@ protected:
     ListRow rowFor(const jelly::Item& item, int tag) override {
         ListRow r = ItemListScreen::rowFor(item, tag);
         r.title = (item.indexNumber ? std::to_string(item.indexNumber) + ". " : "") + item.name;
-        r.image = posterFor(item, 48, 27);
+        r.image = posterFor(item, 80, 45);
         return r;
     }
 

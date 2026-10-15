@@ -52,7 +52,7 @@ private:
     void loop();
     Decoded decode(const Source& src);
 
-    static constexpr size_t MAX_ENTRIES = 40;
+    static constexpr size_t MAX_ENTRIES = 60;
 
     jelly::IHttp* http_ = nullptr;
     std::function<jelly::Headers()> headers_;

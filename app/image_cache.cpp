@@ -99,18 +99,30 @@ ImageCache::Decoded ImageCache::decode(const Source& src) {
                                                static_cast<int>(bytes.size()), &w, &h, &n, 3);
     if (!rgb) return out;
 
-    // Box-fit into maxW×maxH with nearest-neighbour sampling (sources are already server-resized).
+    // Box-fit into maxW×maxH, averaging every source pixel that falls in each destination pixel.
     float scale = std::min(1.0f, std::min(static_cast<float>(src.maxW) / w, static_cast<float>(src.maxH) / h));
     out.w = std::max(1, static_cast<int>(w * scale));
     out.h = std::max(1, static_cast<int>(h * scale));
     out.pixels.resize(static_cast<size_t>(out.w) * out.h);
     for (int y = 0; y < out.h; ++y) {
-        int sy = std::min(h - 1, static_cast<int>(y / scale));
+        int y0 = y * h / out.h, y1 = std::max(y0 + 1, (y + 1) * h / out.h);
         for (int x = 0; x < out.w; ++x) {
-            int sx = std::min(w - 1, static_cast<int>(x / scale));
-            const unsigned char* p = rgb + (static_cast<size_t>(sy) * w + sx) * 3;
+            int x0 = x * w / out.w, x1 = std::max(x0 + 1, (x + 1) * w / out.w);
+            unsigned r = 0, gsum = 0, b = 0, n = 0;
+            for (int sy = y0; sy < y1; ++sy) {
+                const unsigned char* p = rgb + (static_cast<size_t>(sy) * w + x0) * 3;
+                for (int sx = x0; sx < x1; ++sx, p += 3) {
+                    r += p[0];
+                    gsum += p[1];
+                    b += p[2];
+                    ++n;
+                }
+            }
+            r /= n;
+            gsum /= n;
+            b /= n;
             out.pixels[static_cast<size_t>(y) * out.w + x] =
-                static_cast<uint16_t>(((p[0] >> 3) << 11) | ((p[1] >> 2) << 5) | (p[2] >> 3));
+                static_cast<uint16_t>(((r >> 3) << 11) | ((gsum >> 2) << 5) | (b >> 3));
         }
     }
     stbi_image_free(rgb);
