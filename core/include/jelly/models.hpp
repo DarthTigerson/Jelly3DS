@@ -50,6 +50,9 @@ struct Item {
     int childCount = 0;
     bool isFolder = false;
     std::string primaryImageTag;
+    std::string seriesPrimaryImageTag;  // episodes: the show's poster
+    std::string backdropItemId;         // item owning the backdrop (itself, or the series for episodes)
+    std::string backdropImageTag;
     UserData userData;
     std::vector<MediaSource> mediaSources;
 

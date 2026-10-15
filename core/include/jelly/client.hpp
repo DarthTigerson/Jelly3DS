@@ -66,7 +66,9 @@ public:
     Result<bool> updateUserData(const std::string& itemId, int64_t positionTicks, bool played, int64_t lastPlayedAt);
     Result<std::vector<Item>> itemsByIds(const std::vector<std::string>& ids);
 
-    std::string imageUrl(const std::string& itemId, const std::string& tag, int maxWidth, int maxHeight) const;
+    /// `type`: "Primary", "Backdrop" or "Thumb".
+    std::string imageUrl(const std::string& itemId, const std::string& tag, int maxWidth, int maxHeight,
+                         const std::string& type = "Primary") const;
     std::string server() const;
     std::string deviceId() const;
     Headers authHeaders() const;

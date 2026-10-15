@@ -415,3 +415,40 @@ TEST_CASE("sync while offline keeps everything dirty") {
     CHECK_FALSE(report.reachedServer);
     CHECK(f.progress.get("e1")->dirty);
 }
+
+TEST_CASE("image fields: series poster and backdrop fall back to the parent") {
+    auto ep = nlohmann::json::parse(R"({
+        "Id":"e1","Type":"Episode","SeriesId":"s1","SeriesPrimaryImageTag":"sp",
+        "BackdropImageTags":[],"ParentBackdropItemId":"s1","ParentBackdropImageTags":["pb"]
+    })").get<Item>();
+    CHECK(ep.seriesPrimaryImageTag == "sp");
+    CHECK(ep.backdropItemId == "s1");
+    CHECK(ep.backdropImageTag == "pb");
+
+    auto movie = nlohmann::json::parse(R"({"Id":"m1","Type":"Movie","BackdropImageTags":["own"]})").get<Item>();
+    CHECK(movie.backdropItemId == "m1");
+    CHECK(movie.backdropImageTag == "own");
+
+    auto bare = nlohmann::json::parse(R"({"Id":"x","Type":"Episode"})").get<Item>();
+    CHECK(bare.backdropItemId.empty());
+    CHECK(bare.seriesPrimaryImageTag.empty());
+}
+
+TEST_CASE("image URLs carry the image type") {
+    Config c = loggedInConfig();
+    FakeHttp http;
+    Client client(http, c, "t");
+    CHECK(contains(client.imageUrl("s1", "pb", 400, 240, "Backdrop"), "/Items/s1/Images/Backdrop?"));
+    CHECK(contains(client.imageUrl("e1", "", 64, 96), "/Items/e1/Images/Primary?"));
+}
+
+TEST_CASE("continue view choice is remembered") {
+    TempDir dir;
+    Config c = loggedInConfig();
+    CHECK(c.continueView == "shelf");
+    c.continueView = "hero";
+    REQUIRE(c.save(dir.path + "/c.json"));
+    Config d;
+    REQUIRE(d.load(dir.path + "/c.json"));
+    CHECK(d.continueView == "hero");
+}

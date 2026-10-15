@@ -24,6 +24,7 @@ bool Config::load(const std::string& path) {
     audioLanguage = j.value("audioLanguage", "");
     subtitleLanguage = j.value("subtitleLanguage", "");
     verifyTls = j.value("verifyTls", false);
+    continueView = j.value("continueView", "shelf");
     return true;
 }
 
@@ -33,7 +34,7 @@ bool Config::save(const std::string& path) const {
         {"userName", userName},           {"accessToken", accessToken},
         {"deviceId", deviceId},           {"profile", profileName(profile)},
         {"audioLanguage", audioLanguage}, {"subtitleLanguage", subtitleLanguage},
-        {"verifyTls", verifyTls},
+        {"verifyTls", verifyTls},         {"continueView", continueView},
     };
     return saveJson(path, j);
 }

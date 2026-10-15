@@ -62,6 +62,33 @@ ImageCache::Source thumbFor(const jelly::DownloadItem& d, int w, int h) {
     return s;
 }
 
+static ImageCache::Source remoteImage(const std::string& id, const std::string& tag, const std::string& type, int w,
+                                      int h) {
+    ImageCache::Source s;
+    s.key = id + "/" + type + "@" + std::to_string(w) + "x" + std::to_string(h);
+    if (App::get().online()) s.url = App::get().client->imageUrl(id, tag, w, h, type);
+    s.maxW = w;
+    s.maxH = h;
+    return s;
+}
+
+ImageCache::Source stillFor(const jelly::Item& item, int w, int h) {
+    if (item.type == "Episode" && !item.primaryImageTag.empty()) return posterFor(item, w, h);
+    if (!item.backdropImageTag.empty()) return remoteImage(item.backdropItemId, item.backdropImageTag, "Backdrop", w, h);
+    return posterFor(item, w, h);
+}
+
+ImageCache::Source coverFor(const jelly::Item& item, int w, int h) {
+    if (item.type == "Episode" && !item.seriesPrimaryImageTag.empty() && !item.seriesId.empty())
+        return remoteImage(item.seriesId, item.seriesPrimaryImageTag, "Primary", w, h);
+    return posterFor(item, w, h);
+}
+
+ImageCache::Source backdropFor(const jelly::Item& item, int w, int h) {
+    if (!item.backdropImageTag.empty()) return remoteImage(item.backdropItemId, item.backdropImageTag, "Backdrop", w, h);
+    return stillFor(item, w, h);
+}
+
 DownloadBadge downloadBadge(const std::string& itemId) {
     DownloadBadge b;
     auto d = App::get().downloads->find(itemId);

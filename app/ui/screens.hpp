@@ -61,6 +61,12 @@ void toggleWatched(const std::string& itemId, bool played, int64_t runTimeTicks)
 
 ImageCache::Source posterFor(const jelly::Item& item, int w, int h);
 ImageCache::Source thumbFor(const jelly::DownloadItem& d, int w, int h);
+/// Wide 16:9 picture: the episode's own image, else the backdrop.
+ImageCache::Source stillFor(const jelly::Item& item, int w, int h);
+/// Tall 2:3 cover: the show's poster for an episode, else the item's own image.
+ImageCache::Source coverFor(const jelly::Item& item, int w, int h);
+/// Full-screen art: the show's or movie's backdrop, else the still.
+ImageCache::Source backdropFor(const jelly::Item& item, int w, int h);
 
 struct DownloadBadge {
     std::string text;

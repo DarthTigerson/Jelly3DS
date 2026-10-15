@@ -79,6 +79,27 @@ public:
     void draw(Gfx& g);
 };
 
+/// One-line control legend along the bottom of the bottom screen: "Ⓐ Resume  Ⓨ More  SELECT Grid".
+/// Each hint also fires on its button and on a tap.
+struct Hint {
+    std::string key;    // glyph::A/X/Y/B, or a word drawn as a pill ("SELECT")
+    std::string label;
+    u32 keyMask = 0;
+    std::function<void()> action;
+};
+
+class HintStrip {
+public:
+    static constexpr float HEIGHT = 18;
+    std::vector<Hint> hints;
+
+    bool update(const Input& in);
+    void draw(Gfx& g);
+
+private:
+    std::vector<std::pair<float, float>> spans_;  // tap areas from the last draw
+};
+
 /// Title strip for the top screen.
 void drawHeader(Gfx& g, const std::string& title, const std::string& right = "");
 /// Spinner-ish "Loading…" text centered in an area.

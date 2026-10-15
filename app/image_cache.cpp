@@ -31,6 +31,7 @@ void ImageCache::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     entries_.clear();
     lru_.clear();
+    bytes_ = 0;
 }
 
 const Texture* ImageCache::get(const Source& src) {
@@ -75,9 +76,12 @@ void ImageCache::pump() {
         pending_.erase(d.key);
         lru_.push_front(d.key);
         e.lru = lru_.begin();
+        if (e.tex) bytes_ += e.tex->tex.size;
         entries_[d.key] = std::move(e);
-        while (entries_.size() > MAX_ENTRIES) {
-            entries_.erase(lru_.back());
+        while (entries_.size() > MAX_ENTRIES || (bytes_ > MAX_BYTES && entries_.size() > 1)) {
+            auto victim = entries_.find(lru_.back());
+            if (victim != entries_.end() && victim->second.tex) bytes_ -= victim->second.tex->tex.size;
+            entries_.erase(victim);
             lru_.pop_back();
         }
     }

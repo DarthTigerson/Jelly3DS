@@ -68,6 +68,11 @@ public:
     void wrapped(const std::string& s, float x, float y, float size, u32 c, float width, int maxLines);
     float textWidth(const std::string& s, float size);
     void image(const Texture& t, float x, float y, float w, float h);
+    /// Fills the box with the image, cropping the overflow (CSS object-fit: cover).
+    void imageCover(const Texture& t, float x, float y, float w, float h);
+    /// Four corner colours: top-left, top-right, bottom-left, bottom-right.
+    void gradient(float x, float y, float w, float h, u32 tl, u32 tr, u32 bl, u32 br);
+    void outline(float x, float y, float w, float h, u32 c, float thickness = 1);
     void progressBar(float x, float y, float w, float h, float fraction, u32 fill, u32 back = color::panelHi);
 
 private:

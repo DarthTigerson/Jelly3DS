@@ -16,6 +16,7 @@ struct Config {
     std::string audioLanguage;     // preferred audio language (ISO 639-2), empty = server default
     std::string subtitleLanguage;  // preferred subtitle language to burn in, empty = none
     bool verifyTls = false;        // home servers commonly use self-signed certificates
+    std::string continueView = "shelf";  // Continue tab cover view: shelf | grid | hero
 
     bool loggedIn() const { return !serverUrl.empty() && !accessToken.empty() && !userId.empty(); }
 

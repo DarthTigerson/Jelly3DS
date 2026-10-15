@@ -53,6 +53,9 @@ private:
     Decoded decode(const Source& src);
 
     static constexpr size_t MAX_ENTRIES = 60;
+    // Linear memory is shared with video playback: backdrops are 256 KB each, so cap total size too.
+    static constexpr size_t MAX_BYTES = 6 * 1024 * 1024;
+    size_t bytes_ = 0;
 
     jelly::IHttp* http_ = nullptr;
     std::function<jelly::Headers()> headers_;

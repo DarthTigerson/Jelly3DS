@@ -79,6 +79,19 @@ void from_json(const nlohmann::json& j, Item& v) {
     v.isFolder = get<bool>(j, "IsFolder", false);
     auto tags = j.find("ImageTags");
     if (tags != j.end() && tags->is_object()) v.primaryImageTag = get<std::string>(*tags, "Primary", "");
+    v.seriesPrimaryImageTag = get<std::string>(j, "SeriesPrimaryImageTag", "");
+    auto firstTag = [&](const char* key) {
+        auto it = j.find(key);
+        return it != j.end() && it->is_array() && !it->empty() && (*it)[0].is_string() ? (*it)[0].get<std::string>()
+                                                                                      : std::string();
+    };
+    v.backdropImageTag = firstTag("BackdropImageTags");
+    if (!v.backdropImageTag.empty()) {
+        v.backdropItemId = v.id;
+    } else {
+        v.backdropImageTag = firstTag("ParentBackdropImageTags");
+        if (!v.backdropImageTag.empty()) v.backdropItemId = get<std::string>(j, "ParentBackdropItemId", "");
+    }
     auto ud = j.find("UserData");
     if (ud != j.end() && ud->is_object()) v.userData = ud->get<UserData>();
     v.mediaSources = get<std::vector<MediaSource>>(j, "MediaSources", {});

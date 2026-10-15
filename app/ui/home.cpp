@@ -1,3 +1,4 @@
+#include "continue_page.hpp"
 #include "screens.hpp"
 
 #include "jelly/util.hpp"
@@ -12,7 +13,8 @@ using jelly::DownloadStatus;
 
 enum Tab { DOWNLOADS = 0, CONTINUE, LIBRARIES, SETTINGS, TAB_COUNT };
 const char* TAB_NAMES[] = {"Downloads", "Continue", "Libraries", "Settings"};
-constexpr float TAB_H = 30;
+constexpr float TAB_H = 28;
+constexpr float SHOULDER_W = 22;  // L / R markers at the ends of the tab bar
 
 class HomeScreen : public Screen {
 public:
@@ -35,7 +37,14 @@ public:
         int newTab = tab_;
         if (in.down & KEY_R) newTab = (tab_ + 1) % TAB_COUNT;
         if (in.down & KEY_L) newTab = (tab_ + TAB_COUNT - 1) % TAB_COUNT;
-        if (in.tapped && in.tapY < TAB_H) newTab = std::min(TAB_COUNT - 1, in.tapX * TAB_COUNT / BOTTOM_W);
+        if (in.tapped && in.tapY < TAB_H) {
+            if (in.tapX < SHOULDER_W)
+                newTab = (tab_ + TAB_COUNT - 1) % TAB_COUNT;
+            else if (in.tapX >= BOTTOM_W - SHOULDER_W)
+                newTab = (tab_ + 1) % TAB_COUNT;
+            else
+                newTab = std::min(TAB_COUNT - 1, static_cast<int>((in.tapX - SHOULDER_W) * TAB_COUNT / (BOTTOM_W - 2 * SHOULDER_W)));
+        }
         if (newTab != tab_) {
             tab_ = static_cast<Tab>(newTab);
             list_.selected = 0;
@@ -44,6 +53,11 @@ public:
             return;
         }
 
+        if (tab_ == CONTINUE) {
+            continue_.update(in);
+            if (++frames_ % 30 == 0) continue_.refreshBadges();  // download progress
+            return;
+        }
         if (tab_ == LIBRARIES)
             grid_.update(in);
         else
@@ -60,7 +74,9 @@ public:
         auto& a = App::get();
         std::string status = a.online() ? a.config.userName : (a.wifiConnected() ? "Server unreachable" : "Offline");
         drawHeader(g, std::string("Jelly3DS \xC2\xB7 ") + TAB_NAMES[tab_], status);
-        if (loading_)
+        if (tab_ == CONTINUE)
+            continue_.drawTop(g, 28, LIST_H);
+        else if (loading_)
             drawLoading(g, 0, 28, TOP_W, LIST_H);
         else if (tab_ == LIBRARIES)
             grid_.draw(g, 0, 28, TOP_W, LIST_H);
@@ -69,15 +85,21 @@ public:
     }
 
     void drawBottom(Gfx& g) override {
-        // Tabs
-        float w = static_cast<float>(BOTTOM_W) / TAB_COUNT;
+        // Tabs, with the shoulder buttons that switch them at either end
         g.rect(0, 0, BOTTOM_W, TAB_H, color::panel);
+        g.text(glyph::L, SHOULDER_W / 2, 6, 0.5f, color::dim, Align::Center);
+        g.text(glyph::R, BOTTOM_W - SHOULDER_W / 2, 6, 0.5f, color::dim, Align::Center);
+        float w = (BOTTOM_W - 2 * SHOULDER_W) / TAB_COUNT;
         for (int i = 0; i < TAB_COUNT; ++i) {
             bool sel = i == tab_;
-            if (sel) g.rect(i * w, TAB_H - 3, w, 3, color::accent);
-            g.text(TAB_NAMES[i], i * w + w / 2, 7, 0.47f, sel ? color::text : color::dim, Align::Center, w - 4);
+            float tx = SHOULDER_W + i * w;
+            if (sel) g.rect(tx, TAB_H - 3, w, 3, color::accent);
+            g.text(TAB_NAMES[i], tx + w / 2, 7, 0.44f, sel ? color::text : color::dim, Align::Center, w - 2);
         }
-        g.text(std::string(glyph::L) + "/" + glyph::R, 4, TAB_H + 2, 0.38f, color::dim);
+        if (tab_ == CONTINUE) {
+            continue_.drawBottom(g, TAB_H);
+            return;
+        }
 
         const ListRow* row = currentRow();
         float top = TAB_H + 2, bottom = SCREEN_H - ButtonBar::HEIGHT;
@@ -175,14 +197,13 @@ private:
 
     void loadContinue() {
         auto& a = App::get();
-        items_.clear();
-        list_.setRows({});
         if (!a.online()) {
-            loading_ = false;
-            list_.emptyText = "Offline - your downloads are in the Downloads tab";
+            continue_.setLoading(false);
+            continue_.setEmptyText("Offline - your downloads are in the Downloads tab");
+            continue_.setItems({});
             return;
         }
-        loading_ = true;
+        continue_.setLoading(true);
         async<std::vector<jelly::Item>>(
             [] {
                 auto& c = *App::get().client;
@@ -197,13 +218,9 @@ private:
                 return out;
             },
             [this](std::vector<jelly::Item> items) {
-                if (tab_ != CONTINUE) return;
-                items_ = std::move(items);
-                std::vector<ListRow> rows;
-                for (size_t i = 0; i < items_.size(); ++i) rows.push_back(itemRow(items_[i], static_cast<int>(i)));
-                list_.emptyText = "Nothing in progress";
-                list_.setRows(std::move(rows));
-                loading_ = false;
+                continue_.setEmptyText("Nothing in progress - start an episode and it shows up here");
+                continue_.setItems(std::move(items));
+                continue_.setLoading(false);
             });
     }
 
@@ -390,6 +407,7 @@ private:
     Tab tab_ = DOWNLOADS;
     ListView list_;
     GridView grid_;
+    ContinuePage continue_;
     ButtonBar buttons_;
     DetailCache detail_;
     std::vector<jelly::DownloadItem> downloads_;

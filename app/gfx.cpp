@@ -196,6 +196,33 @@ void Gfx::image(const Texture& t, float x, float y, float w, float h) {
     C2D_DrawImageAt(t.image, x, y, 0.5f, nullptr, w / t.width, h / t.height);
 }
 
+void Gfx::imageCover(const Texture& t, float x, float y, float w, float h) {
+    if (!t.valid || t.width == 0 || t.height == 0) return;
+    // Crop the source rectangle to the box's aspect ratio, centred.
+    float srcW = t.width, srcH = t.height;
+    if (srcW / srcH > w / h)
+        srcW = srcH * w / h;
+    else
+        srcH = srcW * h / w;
+    float ox = (t.width - srcW) / 2, oy = (t.height - srcH) / 2;
+    const float tw = t.tex.width, th = t.tex.height;
+    Tex3DS_SubTexture sub = {static_cast<u16>(srcW), static_cast<u16>(srcH), ox / tw, 1.0f - oy / th,
+                             (ox + srcW) / tw, 1.0f - (oy + srcH) / th};
+    C2D_Image img = {const_cast<C3D_Tex*>(&t.tex), &sub};
+    C2D_DrawImageAt(img, x, y, 0.5f, nullptr, w / srcW, h / srcH);
+}
+
+void Gfx::gradient(float x, float y, float w, float h, u32 tl, u32 tr, u32 bl, u32 br) {
+    C2D_DrawRectangle(x, y, 0.5f, w, h, tl, tr, bl, br);
+}
+
+void Gfx::outline(float x, float y, float w, float h, u32 c, float t) {
+    rect(x, y, w, t, c);
+    rect(x, y + h - t, w, t, c);
+    rect(x, y, t, h, c);
+    rect(x + w - t, y, t, h, c);
+}
+
 void Gfx::progressBar(float x, float y, float w, float h, float fraction, u32 fill, u32 back) {
     if (fraction < 0) fraction = 0;
     if (fraction > 1) fraction = 1;

@@ -229,7 +229,8 @@ Result<std::vector<Item>> Client::itemsByIds(const std::vector<std::string>& ids
     return Result<std::vector<Item>>::success(r.value.value("Items", nlohmann::json::array()).get<std::vector<Item>>());
 }
 
-std::string Client::imageUrl(const std::string& itemId, const std::string& tag, int maxWidth, int maxHeight) const {
+std::string Client::imageUrl(const std::string& itemId, const std::string& tag, int maxWidth, int maxHeight,
+                             const std::string& type) const {
     std::vector<std::pair<std::string, std::string>> q = {
         {"maxWidth", std::to_string(maxWidth)},
         {"maxHeight", std::to_string(maxHeight)},
@@ -237,7 +238,7 @@ std::string Client::imageUrl(const std::string& itemId, const std::string& tag, 
         {"quality", "80"},
     };
     if (!tag.empty()) q.emplace_back("tag", tag);
-    return server() + "/Items/" + itemId + "/Images/Primary?" + buildQuery(q);
+    return server() + "/Items/" + itemId + "/Images/" + type + "?" + buildQuery(q);
 }
 
 }  // namespace jelly
