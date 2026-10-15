@@ -26,7 +26,7 @@ bool Config::load(const std::string& path) {
     audioLanguage = j.value("audioLanguage", "");
     subtitleLanguage = j.value("subtitleLanguage", "");
     verifyTls = j.value("verifyTls", false);
-    volumeBoost = std::max(1, std::min(3, j.value("volumeBoost", 2)));
+    volumeBoost = std::max(1, std::min(MAX_VOLUME_BOOST, j.value("volumeBoost", 2)));
     views.clear();
     if (j.contains("views") && j["views"].is_object())
         for (auto& [k, v] : j["views"].items())

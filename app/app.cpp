@@ -31,6 +31,11 @@ bool App::init() {
     bool n3ds = false;
     APT_CheckNew3DS(&n3ds);
     isNew3ds = n3ds;
+    if (R_SUCCEEDED(cfguInit())) {
+        u8 model = 0;
+        if (R_SUCCEEDED(CFGU_GetSystemModel(&model))) canTurnOffBottomScreen = model != CFG_MODEL_2DS;
+        cfguExit();
+    }
     // Lets the audio thread use the second CPU core (the system keeps the rest).
     APT_SetAppCpuTimeLimit(80);
 

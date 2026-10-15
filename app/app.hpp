@@ -72,6 +72,8 @@ public:
     void setPlaying(bool playing) { playing_ = playing; }
 
     bool isNew3ds = false;
+    /// False on the original 2DS: one panel and one backlight, so "bottom screen off" would blank everything.
+    bool canTurnOffBottomScreen = true;
     jelly::Config config;
     std::unique_ptr<jelly::CurlHttp> http;
     std::unique_ptr<jelly::Client> client;

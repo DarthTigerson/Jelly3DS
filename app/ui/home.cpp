@@ -391,7 +391,7 @@ private:
             a.saveConfig();
             break;
         case S_VOLUME:
-            c.volumeBoost = c.volumeBoost % 3 + 1;
+            c.volumeBoost = c.volumeBoost % jelly::MAX_VOLUME_BOOST + 1;
             a.saveConfig();
             break;
         case S_EXIT:

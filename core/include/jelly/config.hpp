@@ -7,6 +7,8 @@ namespace jelly {
 
 enum class ProfileChoice { Auto, New3DS, Old3DS };
 
+constexpr int MAX_VOLUME_BOOST = 5;
+
 struct Config {
     std::string serverUrl;
     std::string userId;
@@ -17,7 +19,7 @@ struct Config {
     std::string audioLanguage;     // preferred audio language (ISO 639-2), empty = server default
     std::string subtitleLanguage;  // preferred subtitle language to burn in, empty = none
     bool verifyTls = false;        // home servers commonly use self-signed certificates
-    int volumeBoost = 2;           // 1 = normal, 2 = 2x, 3 = 3x (soft-limited so it never crackles)
+    int volumeBoost = 2;           // 1 = normal ... 5 = 5x (soft-limited so it never crackles)
     /// Cover view chosen per page ("continue", "tvshows", "movies") → "shelf" | "grid" | "hero".
     std::map<std::string, std::string> views;
 

@@ -410,18 +410,28 @@ std::optional<DownloadStatus> DownloadManager::status(const std::string& itemId)
 }
 
 std::optional<DownloadItem> DownloadManager::nextEpisode(const std::string& itemId) const {
+    return neighbourEpisode(itemId, 1);
+}
+
+std::optional<DownloadItem> DownloadManager::previousEpisode(const std::string& itemId) const {
+    return neighbourEpisode(itemId, -1);
+}
+
+std::optional<DownloadItem> DownloadManager::neighbourEpisode(const std::string& itemId, int dir) const {
     std::lock_guard<std::mutex> lock(mutex_);
     const DownloadItem* cur = nullptr;
     for (const auto& d : items_)
         if (d.itemId == itemId) cur = &d;
     if (!cur || cur->type != "Episode" || cur->seriesId.empty()) return std::nullopt;
 
+    // Closest completed episode of the same series in the requested direction (by season, then episode).
     const DownloadItem* best = nullptr;
     auto key = [](const DownloadItem& d) { return std::make_pair(d.seasonIndex, d.episodeIndex); };
     for (const auto& d : items_) {
         if (d.seriesId != cur->seriesId || d.status != DownloadStatus::Completed || d.itemId == cur->itemId) continue;
-        if (key(d) <= key(*cur)) continue;
-        if (!best || key(d) < key(*best)) best = &d;
+        bool after = key(d) > key(*cur), before = key(d) < key(*cur);
+        if (dir > 0 ? !after : !before) continue;
+        if (!best || (dir > 0 ? key(d) < key(*best) : key(d) > key(*best))) best = &d;
     }
     if (!best) return std::nullopt;
     return *best;

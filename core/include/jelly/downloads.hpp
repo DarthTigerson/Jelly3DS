@@ -91,6 +91,8 @@ public:
     std::optional<DownloadStatus> status(const std::string& itemId) const;
     /// Next downloaded episode of the same series (by season, then episode), if any.
     std::optional<DownloadItem> nextEpisode(const std::string& itemId) const;
+    /// Previous downloaded episode of the same series, if any.
+    std::optional<DownloadItem> previousEpisode(const std::string& itemId) const;
 
     std::string videoPath(const std::string& itemId) const;
     std::string thumbPath(const std::string& itemId) const;
@@ -102,6 +104,7 @@ private:
     void saveLocked();
     std::string dir(const std::string& itemId) const;
     DownloadItem* findLocked(const std::string& itemId);
+    std::optional<DownloadItem> neighbourEpisode(const std::string& itemId, int dir) const;
 
     Client& client_;
     IHttp& http_;

@@ -315,6 +315,18 @@ TEST_CASE("index reload requeues interrupted downloads and flags missing files")
     CHECK(again.find("e2")->status == DownloadStatus::Queued);
 }
 
+TEST_CASE("previous downloaded episode mirrors next") {
+    DownloadFixture f;
+    DownloadOptions o{DeviceProfile::new3ds(), -1, -1};
+    for (auto& [id, s, e] : std::vector<std::tuple<std::string, int, int>>{{"s1e1", 1, 1}, {"s1e3", 1, 3}, {"s2e1", 2, 1}})
+        f.dm.enqueue(episode(id, s, e), o);
+    while (f.dm.runNext()) {
+    }
+    CHECK(f.dm.previousEpisode("s2e1")->itemId == "s1e3");
+    CHECK(f.dm.previousEpisode("s1e3")->itemId == "s1e1");
+    CHECK_FALSE(f.dm.previousEpisode("s1e1"));
+}
+
 TEST_CASE("next downloaded episode ordering skips gaps and other series") {
     DownloadFixture f;
     DownloadOptions o{DeviceProfile::new3ds(), -1, -1};
@@ -468,7 +480,7 @@ TEST_CASE("volume boost defaults to 2x and is clamped") {
     REQUIRE(saveJson(dir.path + "/bad.json", nlohmann::json{{"volumeBoost", 9}}));
     Config e;
     REQUIRE(e.load(dir.path + "/bad.json"));
-    CHECK(e.volumeBoost == 3);
+    CHECK(e.volumeBoost == MAX_VOLUME_BOOST);
 }
 
 TEST_CASE("library queries carry sort and filters; latest reads a bare array") {
