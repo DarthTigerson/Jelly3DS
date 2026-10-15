@@ -429,6 +429,14 @@ private:
         player_.reset();
         Player::Source src;
         if (streaming()) {
+            // Every (re)open needs its own play session: Jellyfin names the transcode after the session,
+            // so reusing it after a seek hands back the previous transcode (playing from the beginning).
+            if (streamStarted_) {
+                std::string old = playSessionId_;
+                a.tasks.run([old] { App::get().client->stopEncoding(old); });
+            }
+            playSessionId_ = jelly::randomHex(32);
+            streamStarted_ = true;
             jelly::StreamRequest sr;
             sr.itemId = req_.itemId;
             sr.mediaSourceId = req_.mediaSourceId;
@@ -591,8 +599,10 @@ private:
             auto id = req_.itemId, ms = req_.mediaSourceId, ps = playSessionId_;
             auto ticks = static_cast<int64_t>(position() * TICKS_PER_SECOND);
             bool stream = streaming() && reportedStart_;
-            a.tasks.run([id, ms, ps, ticks, stream] {
+            bool transcoding = streaming() && streamStarted_;
+            a.tasks.run([id, ms, ps, ticks, stream, transcoding] {
                 if (stream) App::get().client->reportStopped(id, ms, ticks, ps);
+                if (transcoding) App::get().client->stopEncoding(ps);  // free the server
                 App::get().sync->pushItem(id);
             });
         }
@@ -680,6 +690,7 @@ private:
     std::optional<jelly::DownloadItem> nextDownload_, prevDownload_;
     std::optional<jelly::Item> prevItem_;
     bool touchConsumed_ = false;
+    bool streamStarted_ = false;
     std::optional<jelly::Item> nextItem_;
     u64 countdownUntil_ = 0;
 };

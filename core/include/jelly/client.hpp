@@ -76,6 +76,8 @@ public:
     Result<bool> reportStopped(const std::string& itemId, const std::string& mediaSourceId, int64_t positionTicks,
                                const std::string& playSessionId);
     Result<bool> setPlayed(const std::string& itemId, bool played);
+    /// Stops the server-side transcode of a stream (this device, that play session).
+    Result<bool> stopEncoding(const std::string& playSessionId);
     /// Writes resume position / played flag with the real (offline) watch time. Jellyfin 10.9+.
     Result<bool> updateUserData(const std::string& itemId, int64_t positionTicks, bool played, int64_t lastPlayedAt);
     Result<std::vector<Item>> itemsByIds(const std::vector<std::string>& ids);

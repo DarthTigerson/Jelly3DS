@@ -616,3 +616,19 @@ TEST_CASE("lists skip media streams; episodes and details keep them") {
     CHECK_FALSE(contains(urls.at(1), "MediaSources"));
     CHECK(contains(urls.at(2), "MediaSources"));
 }
+
+TEST_CASE("stopping a stream's transcode targets its device and play session") {
+    Config c = loggedInConfig();
+    FakeHttp http;
+    FakeHttp::Call last;
+    http.handler = [&](const FakeHttp::Call& call) -> HttpResponse {
+        last = call;
+        return {204, "", ""};
+    };
+    Client client(http, c, "t");
+    REQUIRE(client.stopEncoding("ps123").ok);
+    CHECK(last.method == "DELETE");
+    CHECK(contains(last.url, "/Videos/ActiveEncodings?"));
+    CHECK(contains(last.url, "deviceId=dev1"));
+    CHECK(contains(last.url, "playSessionId=ps123"));
+}

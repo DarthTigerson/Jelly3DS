@@ -233,6 +233,14 @@ Result<bool> Client::reportStopped(const std::string& itemId, const std::string&
     return postJson("/Sessions/Playing/Stopped", playbackBody(itemId, mediaSourceId, positionTicks, playSessionId));
 }
 
+Result<bool> Client::stopEncoding(const std::string& playSessionId) {
+    auto r = http_.del(server() + "/Videos/ActiveEncodings?" +
+                           buildQuery({{"deviceId", deviceId()}, {"playSessionId", playSessionId}}),
+                       authHeaders());
+    if (!r.ok()) return Result<bool>::failure(describe(r));
+    return Result<bool>::success(true);
+}
+
 Result<bool> Client::setPlayed(const std::string& itemId, bool played) {
     std::string path = "/UserPlayedItems/" + itemId + "?" + buildQuery({{"userId", uid()}});
     auto r = played ? http_.post(server() + path, authHeaders(), "") : http_.del(server() + path, authHeaders());
