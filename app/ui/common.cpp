@@ -44,7 +44,7 @@ ImageCache::Source posterFor(const jelly::Item& item, int w, int h) {
     auto st = dm.status(item.id);
     if (st && (*st == DownloadStatus::Completed || *st == DownloadStatus::Downloading)) {
         s.path = dm.thumbPath(item.id);
-    } else if (!tag.empty() && App::get().online()) {
+    } else if (!tag.empty()) {  // served from the SD image cache when offline
         s.url = App::get().client->imageUrl(id, tag, w * 2, h * 2);
     }
     s.key = id + "@" + std::to_string(w) + "x" + std::to_string(h);
@@ -60,6 +60,33 @@ ImageCache::Source thumbFor(const jelly::DownloadItem& d, int w, int h) {
     s.maxW = w;
     s.maxH = h;
     return s;
+}
+
+static ImageCache::Source remoteImage(const std::string& id, const std::string& tag, const std::string& type, int w,
+                                      int h) {
+    ImageCache::Source s;
+    s.key = id + "/" + type + "@" + std::to_string(w) + "x" + std::to_string(h);
+    s.url = App::get().client->imageUrl(id, tag, w, h, type);
+    s.maxW = w;
+    s.maxH = h;
+    return s;
+}
+
+ImageCache::Source stillFor(const jelly::Item& item, int w, int h) {
+    if (item.type == "Episode" && !item.primaryImageTag.empty()) return posterFor(item, w, h);
+    if (!item.backdropImageTag.empty()) return remoteImage(item.backdropItemId, item.backdropImageTag, "Backdrop", w, h);
+    return posterFor(item, w, h);
+}
+
+ImageCache::Source coverFor(const jelly::Item& item, int w, int h) {
+    if (item.type == "Episode" && !item.seriesPrimaryImageTag.empty() && !item.seriesId.empty())
+        return remoteImage(item.seriesId, item.seriesPrimaryImageTag, "Primary", w, h);
+    return posterFor(item, w, h);
+}
+
+ImageCache::Source backdropFor(const jelly::Item& item, int w, int h) {
+    if (!item.backdropImageTag.empty()) return remoteImage(item.backdropItemId, item.backdropImageTag, "Backdrop", w, h);
+    return stillFor(item, w, h);
 }
 
 DownloadBadge downloadBadge(const std::string& itemId) {
@@ -224,6 +251,12 @@ void playDownload(const jelly::DownloadItem& d, bool fromStart) {
     r.seriesId = d.seriesId;
     r.runTimeTicks = d.runTimeTicks;
     r.localPath = App::get().downloads->videoPath(d.itemId);
+    r.seasonIndex = d.seasonIndex;
+    r.episodeIndex = d.episodeIndex;
+    if (d.introEndTicks > d.introStartTicks && d.introStartTicks >= 0) {
+        r.introStart = static_cast<double>(d.introStartTicks) / TICKS_PER_SECOND;
+        r.introEnd = static_cast<double>(d.introEndTicks) / TICKS_PER_SECOND;
+    }
     r.startSeconds = fromStart ? 0 : static_cast<double>(resumeTicks(d.itemId, nullptr)) / TICKS_PER_SECOND;
     App::get().push(makePlayerScreen(std::move(r)));
 }
@@ -247,6 +280,8 @@ void playItem(const jelly::Item& item, bool fromStart) {
                      std::to_string(item.indexNumber);
     r.seriesId = item.seriesId;
     r.runTimeTicks = item.runTimeTicks;
+    r.seasonIndex = item.parentIndexNumber;
+    r.episodeIndex = item.indexNumber;
     r.startSeconds = fromStart ? 0 : static_cast<double>(resumeTicks(item.id, &item.userData)) / TICKS_PER_SECOND;
     if (!item.mediaSources.empty()) {
         const auto& src = item.mediaSources.front();
@@ -265,7 +300,7 @@ void toggleWatched(const std::string& itemId, bool played, int64_t runTimeTicks)
     a.toast(played ? "Marked as watched" : "Marked as unwatched");
 }
 
-void openItemMenu(const jelly::Item& item) {
+void openItemMenu(const jelly::Item& item, std::vector<MenuOption> extra) {
     auto& a = App::get();
     std::vector<MenuOption> opts;
     int64_t resume = resumeTicks(item.id, &item.userData);
@@ -277,7 +312,8 @@ void openItemMenu(const jelly::Item& item) {
     }
     auto d = a.downloads->find(item.id);
     if (!d) {
-        opts.push_back({"Download\xE2\x80\xA6", [item] { App::get().push(makeDownloadOptions({item})); }, a.online()});
+        opts.push_back({item.type == "Episode" ? "Download episode" : "Download", [item] { downloadItems({item}); },
+                        a.online()});
     } else if (d->status == DownloadStatus::Completed) {
         std::string id = item.id;
         opts.push_back({"Delete download", [id] {
@@ -297,7 +333,52 @@ void openItemMenu(const jelly::Item& item) {
     std::string id = item.id;
     int64_t rt = item.runTimeTicks;
     opts.push_back({played ? "Mark as unwatched" : "Mark as watched", [id, played, rt] { toggleWatched(id, !played, rt); }});
+    for (auto& o : extra) opts.push_back(std::move(o));
     a.push(makeMenu(item.label(), std::move(opts)));
+}
+
+void downloadItems(std::vector<jelly::Item> items) {
+    std::vector<jelly::Item> todo;
+    for (auto& i : items)
+        if (i.isPlayable() && !App::get().downloads->status(i.id)) todo.push_back(std::move(i));
+    if (todo.empty()) {
+        App::get().toast("Already downloaded");
+        return;
+    }
+    // Lists are fetched without track details (much faster); get them now for the audio/subtitle choice.
+    bool needTracks = std::any_of(todo.begin(), todo.end(), [](const jelly::Item& i) { return i.mediaSources.empty(); });
+    if (!needTracks || !App::get().online()) {
+        App::get().push(makeDownloadOptions(std::move(todo)));
+        return;
+    }
+    std::vector<std::string> ids;
+    for (const auto& i : todo) ids.push_back(i.id);
+    App::get().tasks.run([todo, ids]() mutable {
+        auto r = App::get().client->itemsByIds(ids);
+        if (r.ok)
+            for (auto& item : todo)
+                for (const auto& full : r.value)
+                    if (full.id == item.id) item.mediaSources = full.mediaSources;
+        App::get().tasks.post([todo]() mutable { App::get().push(makeDownloadOptions(std::move(todo))); });
+    });
+}
+
+void downloadSeries(const std::string& seriesId, const std::string& seasonId) {
+    auto& a = App::get();
+    if (!a.online()) {
+        a.toast("Downloading needs your server");
+        return;
+    }
+    a.toast("Fetching episodes\xE2\x80\xA6");
+    a.tasks.run([seriesId, seasonId] {
+        auto r = App::get().client->episodes(seriesId, seasonId);
+        App::get().tasks.post([r]() mutable {
+            if (r.ok)
+                downloadItems(std::move(r.value));
+            else
+                App::get().toast(r.error);
+        });
+    });
 }
 
 void openDownloadMenu(const jelly::DownloadItem& d) {

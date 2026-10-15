@@ -28,7 +28,8 @@ public:
         int maxH = 64;
     };
 
-    void start(jelly::IHttp* http, std::function<jelly::Headers()> headers);
+    /// `diskDir`: where decoded pictures are kept between sessions (empty = memory only).
+    void start(jelly::IHttp* http, std::function<jelly::Headers()> headers, std::string diskDir = "");
     void stop();
 
     /// Returns the texture when ready; otherwise queues the load and returns nullptr.
@@ -46,15 +47,23 @@ private:
     struct Entry {
         std::unique_ptr<Texture> tex;
         bool failed = false;
+        u64 failedAt = 0;
         std::list<std::string>::iterator lru;
     };
 
     void loop();
     Decoded decode(const Source& src);
+    bool loadDisk(const std::string& file, Decoded& out);
+    void saveDisk(const std::string& file, const Decoded& d);
+    void pruneDisk();
 
     static constexpr size_t MAX_ENTRIES = 60;
+    // Linear memory is shared with video playback: backdrops are 256 KB each, so cap total size too.
+    static constexpr size_t MAX_BYTES = 6 * 1024 * 1024;
+    size_t bytes_ = 0;
 
     jelly::IHttp* http_ = nullptr;
+    std::string diskDir_;
     std::function<jelly::Headers()> headers_;
     Thread thread_;
     std::mutex mutex_;

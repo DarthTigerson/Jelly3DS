@@ -90,6 +90,9 @@ public:
     int videoWidth() const { return displayW_; }
     int videoHeight() const { return displayH_; }
 
+    /// Volume boost (1 = as decoded). Takes effect immediately.
+    void setGain(float gain) { gain_ = gain; }
+
     static bool initAudio();
     static void exitAudio();
 
@@ -149,6 +152,7 @@ private:
     double bufPts_[AUDIO_BUFS] = {};
     int nextBuf_ = 0;
     int sampleRate_ = 32000;
+    std::atomic<float> gain_{1.0f};
     mutable std::atomic<double> lastAudioClock_{0};
     std::atomic<int> flushGen_{0};
     static bool audioAvailable_;

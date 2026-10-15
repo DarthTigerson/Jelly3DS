@@ -17,6 +17,7 @@ add_library(jelly_core STATIC
     core/src/progress.cpp
     core/src/downloads.cpp
     core/src/sync.cpp
+    core/src/cache.cpp
     platform/curl_http.cpp
 )
 target_include_directories(jelly_core PUBLIC core/include platform ${THIRD_PARTY})

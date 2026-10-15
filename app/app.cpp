@@ -40,6 +40,8 @@ bool App::init() {
     if (socBuffer) socInit(socBuffer, SOC_BUFFER_SIZE);
     acInit();
     gspLcdInit();
+    ptmuInit();
+    ptmSysm_ = R_SUCCEEDED(ptmSysmInit());
     Player::initAudio();
     hidSetRepeatParameters(18, 5);
 
@@ -52,13 +54,15 @@ bool App::init() {
     curlOptions.fileBufferSize = 256 * 1024;
     http = std::make_unique<jelly::CurlHttp>(curlOptions);
     client = std::make_unique<jelly::Client>(*http, config, isNew3ds ? "New Nintendo 3DS" : "Nintendo 3DS");
+    responseCache = std::make_unique<jelly::ResponseCache>(std::string(DATA_DIR) + "/cache/api");
+    client->setCache(responseCache.get());
     progress = std::make_unique<jelly::ProgressStore>(std::string(DATA_DIR) + "/progress.json");
     progress->load();
     downloads = std::make_unique<jelly::DownloadManager>(*client, *http, std::string(DATA_DIR) + "/downloads");
     downloads->load();
     sync = std::make_unique<jelly::SyncEngine>(*client, *progress, *downloads);
 
-    images.start(http.get(), [this] { return client->authHeaders(); });
+    images.start(http.get(), [this] { return client->authHeaders(); }, std::string(DATA_DIR) + "/cache/img");
     tasks.start();
     downloadThread_.start([this] { downloadLoop(); }, 0x33, -2, 128 * 1024);
     aptHook(&aptCookie_, aptHookCallback, this);
@@ -86,6 +90,9 @@ void App::shutdown() {
     if (!bottomOn_) setBottomScreenOn(true);
     aptSetSleepAllowed(true);
     Player::exitAudio();
+    if (lidDark_ || screensOff_) GSPLCD_PowerOnAllBacklights();
+    if (ptmSysm_) ptmSysmExit();
+    ptmuExit();
     gspLcdExit();
     acExit();
     socExit();
@@ -105,6 +112,11 @@ void App::replaceAll(std::unique_ptr<Screen> s) {
     pendingPush_.clear();
     pendingPops_ = 0;
     pendingPush_.push_back(std::move(s));
+}
+
+void App::goHome() {
+    pendingPush_.clear();
+    pendingPops_ = static_cast<int>(stack_.size()) - 1;
 }
 
 void App::applyNavigation() {
@@ -200,6 +212,39 @@ void App::downloadLoop() {
     }
 }
 
+void App::manageSleep() {
+    // Sleep mode suspends the app and its Wi-Fi, so while the queue runs the console must stay awake.
+    bool block = online_ && downloads->active();
+    if (block != sleepBlocked_) {
+        aptSetSleepAllowed(!block);
+        sleepBlocked_ = block;
+    }
+    u64 now = osGetTime();
+    if (now < nextLidPoll_) return;
+    nextLidPoll_ = now + 500;
+    u8 shell = 1;
+    PTMU_GetShellState(&shell);  // 0 = lid closed
+    bool closed = shell == 0;
+    if (closed && block && !lidDark_) {
+        GSPLCD_PowerOffAllBacklights();
+        lidDark_ = true;
+    } else if (!closed && lidDark_) {
+        GSPLCD_PowerOnAllBacklights();
+        if (!bottomOn_) GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_BOTTOM);
+        lidDark_ = false;
+    } else if (closed && lidDark_ && !block) {
+        // Queue finished with the lid shut: let the console sleep now.
+        GSPLCD_PowerOnAllBacklights();
+        lidDark_ = false;
+        if (ptmSysm_) PTMSYSM_RequestSleep();
+    }
+}
+
+void App::screensOff() {
+    GSPLCD_PowerOffAllBacklights();
+    screensOff_ = true;
+}
+
 void App::setBottomScreenOn(bool on) {
     bottomOn_ = on;
     if (on)
@@ -217,6 +262,12 @@ void App::readInput(Input& in) {
     in.tapped = false;
     in.touching = in.held & KEY_TOUCH;
 
+    if (screensOff_ && (in.down & ~KEY_TOUCH)) {
+        GSPLCD_PowerOnAllBacklights();
+        if (!bottomOn_) GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_BOTTOM);
+        screensOff_ = false;
+        in.down = 0;  // the wake-up press does nothing else
+    }
     // Any button wakes the bottom screen back up (except X, which toggles it in the player).
     if (!bottomOn_ && (in.down & ~(KEY_X | KEY_TOUCH)) && !(in.held & KEY_X)) {
         bool keepOff = !stack_.empty() && stack_.back()->keepsBottomOff();
@@ -261,16 +312,15 @@ void App::run() {
         tasks.drainMain();
         if (stack_.empty()) break;
 
+        if ((in.down & KEY_START) && stack_.size() > 1 && stack_.back()->startGoesHome()) {
+            goHome();
+            in.down &= ~KEY_START;
+        }
         stack_.back()->update(in);
         applyNavigation();
         if (stack_.empty()) break;
 
-        // Keep the console awake while a download runs (closing the lid would cut Wi-Fi).
-        bool block = downloads->isDownloading();
-        if (block != sleepBlocked_) {
-            aptSetSleepAllowed(!block);
-            sleepBlocked_ = block;
-        }
+        manageSleep();
 
         gfx.beginFrame();
         images.pump();

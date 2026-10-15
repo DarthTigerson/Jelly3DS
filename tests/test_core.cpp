@@ -415,3 +415,192 @@ TEST_CASE("sync while offline keeps everything dirty") {
     CHECK_FALSE(report.reachedServer);
     CHECK(f.progress.get("e1")->dirty);
 }
+
+TEST_CASE("image fields: series poster and backdrop fall back to the parent") {
+    auto ep = nlohmann::json::parse(R"({
+        "Id":"e1","Type":"Episode","SeriesId":"s1","SeriesPrimaryImageTag":"sp",
+        "BackdropImageTags":[],"ParentBackdropItemId":"s1","ParentBackdropImageTags":["pb"]
+    })").get<Item>();
+    CHECK(ep.seriesPrimaryImageTag == "sp");
+    CHECK(ep.backdropItemId == "s1");
+    CHECK(ep.backdropImageTag == "pb");
+
+    auto movie = nlohmann::json::parse(R"({"Id":"m1","Type":"Movie","BackdropImageTags":["own"]})").get<Item>();
+    CHECK(movie.backdropItemId == "m1");
+    CHECK(movie.backdropImageTag == "own");
+
+    auto bare = nlohmann::json::parse(R"({"Id":"x","Type":"Episode"})").get<Item>();
+    CHECK(bare.backdropItemId.empty());
+    CHECK(bare.seriesPrimaryImageTag.empty());
+}
+
+TEST_CASE("image URLs carry the image type") {
+    Config c = loggedInConfig();
+    FakeHttp http;
+    Client client(http, c, "t");
+    CHECK(contains(client.imageUrl("s1", "pb", 400, 240, "Backdrop"), "/Items/s1/Images/Backdrop?"));
+    CHECK(contains(client.imageUrl("e1", "", 64, 96), "/Items/e1/Images/Primary?"));
+}
+
+TEST_CASE("cover view choice is remembered per page") {
+    TempDir dir;
+    Config c = loggedInConfig();
+    CHECK(c.view("continue", "shelf") == "shelf");
+    c.views["continue"] = "hero";
+    c.views["movies"] = "grid";
+    REQUIRE(c.save(dir.path + "/c.json"));
+    Config d;
+    REQUIRE(d.load(dir.path + "/c.json"));
+    CHECK(d.view("continue", "shelf") == "hero");
+    CHECK(d.view("movies", "hero") == "grid");
+    CHECK(d.view("tvshows", "grid") == "grid");
+}
+
+TEST_CASE("volume boost defaults to 2x and is clamped") {
+    TempDir dir;
+    Config c = loggedInConfig();
+    CHECK(c.volumeBoost == 2);
+    c.volumeBoost = 3;
+    REQUIRE(c.save(dir.path + "/c.json"));
+    Config d;
+    REQUIRE(d.load(dir.path + "/c.json"));
+    CHECK(d.volumeBoost == 3);
+    REQUIRE(saveJson(dir.path + "/bad.json", nlohmann::json{{"volumeBoost", 9}}));
+    Config e;
+    REQUIRE(e.load(dir.path + "/bad.json"));
+    CHECK(e.volumeBoost == 3);
+}
+
+TEST_CASE("library queries carry sort and filters; latest reads a bare array") {
+    Config c = loggedInConfig();
+    FakeHttp http;
+    std::string lastUrl;
+    http.handler = [&](const FakeHttp::Call& call) -> HttpResponse {
+        lastUrl = call.url;
+        if (contains(call.url, "/Items/Latest")) return {200, R"([{"Id":"a","Name":"New","Type":"Movie","OfficialRating":"PG","Genres":["Drama"]}])", ""};
+        return {200, R"({"Items":[],"TotalRecordCount":0})", ""};
+    };
+    Client client(http, c, "t");
+    ItemQuery q;
+    q.parentId = "lib";
+    q.sortBy = "DateCreated";
+    q.sortOrder = "Descending";
+    q.filters = "IsUnplayed";
+    client.items(q);
+    CHECK(contains(lastUrl, "sortBy=DateCreated"));
+    CHECK(contains(lastUrl, "sortOrder=Descending"));
+    CHECK(contains(lastUrl, "filters=IsUnplayed"));
+    auto latest = client.latest("lib", 5);
+    REQUIRE(latest.ok);
+    REQUIRE(latest.value.size() == 1);
+    CHECK(latest.value[0].officialRating == "PG");
+    CHECK(latest.value[0].genres.at(0) == "Drama");
+}
+
+TEST_CASE("queue: move up, pause and retry all") {
+    DownloadFixture f;
+    DownloadOptions o{DeviceProfile::new3ds(), -1, -1};
+    f.dm.enqueue(episode("a", 1, 1), o);
+    f.dm.enqueue(episode("b", 1, 2), o);
+    f.dm.enqueue(episode("c", 1, 3), o);
+    f.dm.moveUp("c");
+    auto ids = [&] {
+        std::string s;
+        for (const auto& d : f.dm.items()) s += d.itemId;
+        return s;
+    };
+    CHECK(ids() == "acb");
+    f.dm.moveUp("a");  // already first: no change
+    CHECK(ids() == "acb");
+
+    f.dm.setPaused(true);
+    CHECK_FALSE(f.dm.active());
+    CHECK_FALSE(f.dm.runNext());
+    f.dm.setPaused(false);
+    CHECK(f.dm.active());
+    REQUIRE(f.dm.runNext());
+    CHECK(f.dm.find("a")->status == DownloadStatus::Completed);
+
+    f.videoBody = "x";  // next two fail
+    f.dm.runNext();
+    f.dm.runNext();
+    CHECK(f.dm.find("b")->status == DownloadStatus::Failed);
+    f.dm.retryFailed();
+    CHECK(f.dm.find("b")->status == DownloadStatus::Queued);
+    CHECK(f.dm.find("c")->status == DownloadStatus::Queued);
+}
+
+TEST_CASE("downloads save the show poster and intro timings for offline use") {
+    DownloadFixture f;
+    std::vector<std::string> urls;
+    f.http.handler = [&](const FakeHttp::Call& c) -> HttpResponse {
+        urls.push_back(c.url);
+        if (contains(c.url, "/MediaSegments/"))
+            return {200, R"({"Items":[{"Type":"Intro","StartTicks":350000000,"EndTicks":1300000000}]})", ""};
+        if (contains(c.url, "/Images/")) return {200, "jpg", ""};
+        if (contains(c.url, "/stream.ts")) return {200, f.videoBody, ""};
+        return {404, "", ""};
+    };
+    Item ep = episode("e1", 1, 1);
+    ep.seriesPrimaryImageTag = "ptag";
+    REQUIRE(f.dm.enqueue(ep, {DeviceProfile::new3ds(), -1, -1}));
+    f.dm.runNext();
+    auto d = f.dm.find("e1");
+    CHECK(d->introStartTicks == 350000000);
+    CHECK(d->introEndTicks == 1300000000);
+    CHECK(fileExists(f.dm.posterPath("e1")));
+    bool seriesPoster = false;
+    for (const auto& u : urls)
+        if (contains(u, "/Items/series1/Images/Primary") && contains(u, "tag=ptag")) seriesPoster = true;
+    CHECK(seriesPoster);
+    // Persisted across restarts.
+    DownloadManager again(f.client, f.http, f.dm.root());
+    again.load();
+    CHECK(again.find("e1")->introEndTicks == 1300000000);
+}
+
+TEST_CASE("responses are saved and served from the SD cache without the network") {
+    TempDir dir;
+    Config c = loggedInConfig();
+    FakeHttp http;
+    int calls = 0;
+    http.handler = [&](const FakeHttp::Call&) -> HttpResponse {
+        ++calls;
+        return {200, R"({"Items":[{"Id":"s1","Name":"Show","Type":"Series"}],"TotalRecordCount":1})", ""};
+    };
+    ResponseCache cache(dir.path + "/api");
+    Client client(http, c, "t");
+    client.setCache(&cache);
+    ItemQuery q;
+    q.parentId = "lib";
+
+    CHECK_FALSE(client.items(q, Source::Cache).ok);  // nothing saved yet
+    CHECK(calls == 0);
+    REQUIRE(client.items(q).ok);
+    CHECK(calls == 1);
+    auto cached = client.items(q, Source::Cache);
+    REQUIRE(cached.ok);
+    CHECK(calls == 1);
+    CHECK(cached.value.items.at(0).name == "Show");
+
+    // A different query is a different cache entry.
+    q.sortBy = "DateCreated";
+    CHECK_FALSE(client.items(q, Source::Cache).ok);
+}
+
+TEST_CASE("lists skip media streams; episodes and details keep them") {
+    Config c = loggedInConfig();
+    FakeHttp http;
+    std::vector<std::string> urls;
+    http.handler = [&](const FakeHttp::Call& call) -> HttpResponse {
+        urls.push_back(call.url);
+        return {200, R"({"Items":[]})", ""};
+    };
+    Client client(http, c, "t");
+    client.items(ItemQuery{});
+    client.nextUp();
+    client.episodes("s1");
+    CHECK_FALSE(contains(urls.at(0), "MediaSources"));
+    CHECK_FALSE(contains(urls.at(1), "MediaSources"));
+    CHECK(contains(urls.at(2), "MediaSources"));
+}

@@ -13,7 +13,30 @@ namespace {
 
 using jelly::TICKS_PER_SECOND;
 
-constexpr float BAR_X = 16, BAR_Y = 118, BAR_W = BOTTOM_W - 32, BAR_H = 12;
+// Bottom-screen layout (the top screen shows only the video).
+constexpr float BAR_X = 12, BAR_Y = 50, BAR_W = BOTTOM_W - 24, BAR_H = 6;
+constexpr float SKIP_X = 196, SKIP_Y = 76, SKIP_W = 112, SKIP_H = 24;
+constexpr float BTN_W = 50, BTN_H = 42, PLAY_R = 28, GAP = 12;
+constexpr float ROW_Y = 136;  // vertical centre of the transport row
+constexpr float CHIP_Y = 172, CHIP_H = 24;
+constexpr float HINT_H = 18;
+
+struct Rect {
+    float x, y, w, h;
+    bool hit(int px, int py) const { return px >= x && px < x + w && py >= y && py < y + h; }
+};
+
+// Transport row: −10s, play/pause (circle), +10s, next episode.
+constexpr float ROW_X = (BOTTOM_W - (BTN_W * 3 + PLAY_R * 2 + GAP * 3)) / 2;
+constexpr Rect BACK10{ROW_X, ROW_Y - BTN_H / 2, BTN_W, BTN_H};
+constexpr Rect PLAY{ROW_X + BTN_W + GAP, ROW_Y - PLAY_R, PLAY_R * 2, PLAY_R * 2};
+constexpr Rect FWD10{ROW_X + BTN_W + GAP * 2 + PLAY_R * 2, ROW_Y - BTN_H / 2, BTN_W, BTN_H};
+constexpr Rect NEXT{ROW_X + BTN_W * 2 + GAP * 3 + PLAY_R * 2, ROW_Y - BTN_H / 2, BTN_W, BTN_H};
+constexpr Rect BOOST{58, CHIP_Y, 84, CHIP_H};
+constexpr Rect SCREEN{150, CHIP_Y, 112, CHIP_H};
+constexpr Rect SKIP{SKIP_X, SKIP_Y, SKIP_W, SKIP_H};
+constexpr Rect PLAY_NEXT_BIG{30, 70, BOTTOM_W - 60, 48};
+constexpr Rect BACK_BIG{30, 128, BOTTOM_W - 60, 40};
 
 class PlayerScreen : public Screen {
 public:
@@ -21,6 +44,8 @@ public:
         playSessionId_ = jelly::randomHex(32);
         App::get().setPlaying(true);
         open(req_.startSeconds);
+        findNext();
+        if (streaming() && req_.introEnd < 0 && App::get().online()) fetchIntro();
     }
 
     ~PlayerScreen() override {
@@ -30,6 +55,7 @@ public:
     }
 
     bool keepsBottomOff() const override { return bottomOff_; }
+    bool startGoesHome() const override { return false; }  // B stops playback (and saves the position)
 
     void onSuspend() override {
         if (player_ && state_ == State::Playing) {
@@ -51,33 +77,30 @@ public:
             if (in.down & KEY_B) finish();
             return;
         case State::NextUp:
-            if ((in.down & KEY_A) || now >= countdownUntil_) {
-                auto next = *next_;
+            if ((in.down & KEY_A) || (in.tapped && PLAY_NEXT_BIG.hit(in.tapX, in.tapY)) || now >= countdownUntil_) {
+                startNext();
+            } else if ((in.down & KEY_B) || (in.tapped && BACK_BIG.hit(in.tapX, in.tapY))) {
                 App::get().pop();
-                playDownload(next, false);
-            } else if (in.down & KEY_B) {
-                finish();
             }
             return;
         case State::Playing: break;
         }
 
-        // --- Playing
-        if (in.down & (KEY_A | KEY_DOWN | KEY_UP | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_Y)) showOsd();
         if (in.down & KEY_A) togglePause();
         if (in.repeat & KEY_LEFT) seekBy(-10);
         if (in.repeat & KEY_RIGHT) seekBy(10);
         if (in.repeat & KEY_L) seekBy(-60);
         if (in.repeat & KEY_R) seekBy(60);
-        if (in.down & KEY_Y) osdPinned_ = !osdPinned_;
-        if (in.down & KEY_X) toggleScreen();
+        if ((in.down & KEY_Y) && inIntro()) seekTo(req_.introEnd);
+        if (in.down & (KEY_UP | KEY_DOWN)) changeBoost((in.down & KEY_UP) ? 1 : -1);
+        if (in.down & KEY_X) toggleBottomScreen();
         if (in.down & KEY_B) {
             finish();
             return;
         }
         if (in.tapped) handleTap(in.tapX, in.tapY);
-        if (in.touching && in.touchY >= BAR_Y - 10 && in.touchY <= BAR_Y + BAR_H + 10 && duration() > 0) {
-            // Dragging along the bar previews the target; it is applied on release (handleTap) or below.
+        if (in.touching && in.touchY >= BAR_Y - 12 && in.touchY <= BAR_Y + BAR_H + 12 && duration() > 0) {
+            // Dragging along the bar previews the target; it is applied on release.
             dragTarget_ = std::clamp((in.touchX - BAR_X) / BAR_W, 0.0f, 1.0f) * duration();
         } else if (dragTarget_ >= 0 && !in.touching) {
             seekTo(dragTarget_);
@@ -100,7 +123,7 @@ public:
 
         if (player_->failed()) {
             resumeAt_ = player_->position();
-            error_ = player_->error() + "\n\nPress A to retry from " + jelly::formatDuration(static_cast<int64_t>(resumeAt_));
+            error_ = player_->error() + "\nA: retry from " + jelly::formatDuration(static_cast<int64_t>(resumeAt_));
             savePosition();
             player_.reset();
             state_ = State::Error;
@@ -109,74 +132,62 @@ public:
         if (player_->ended()) onEnded();
     }
 
+    // --- Top screen: only the video (or the next episode's picture between episodes) -----------
+
     void drawTop(Gfx& g) override {
         g.rect(0, 0, TOP_W, SCREEN_H, color::black);
+        if (state_ == State::NextUp) {
+            drawUpNextTop(g);
+            return;
+        }
         if (player_ && player_->texture().valid) {
             float w = player_->videoWidth(), h = player_->videoHeight();
             float s = std::min(TOP_W / w, SCREEN_H / h);
             g.image(player_->texture(), (TOP_W - w * s) / 2, (SCREEN_H - h * s) / 2, w * s, h * s);
         }
-        switch (state_) {
-        case State::Opening:
-            g.text(req_.title, TOP_W / 2.0f, 80, 0.6f, color::text, Align::Center, TOP_W - 20);
-            drawLoading(g, 0, 100, TOP_W, 40, streaming() ? "Your server is converting the video" : "Opening");
-            return;
-        case State::Error:
-            g.text("Playback stopped", TOP_W / 2.0f, 60, 0.65f, color::bad, Align::Center);
-            g.wrapped(error_, 20, 95, 0.5f, color::text, TOP_W - 40, 6);
-            return;
-        case State::NextUp: {
-            g.rect(0, 0, TOP_W, SCREEN_H, color::shade);
-            int secs = static_cast<int>((countdownUntil_ - std::min(countdownUntil_, osGetTime())) / 1000) + 1;
-            g.text("Up next in " + std::to_string(secs), TOP_W / 2.0f, 70, 0.6f, color::dim, Align::Center);
-            g.text(next_->label(), TOP_W / 2.0f, 100, 0.7f, color::text, Align::Center, TOP_W - 20);
-            g.text(std::string(glyph::A) + " play now    " + glyph::B + " stop", TOP_W / 2.0f, 150, 0.5f, color::dim, Align::Center);
-            return;
-        }
-        case State::Playing: break;
-        }
-        if (player_ && player_->buffering()) drawLoading(g, 0, 100, TOP_W, 40, "Buffering");
-        if (!osdVisible()) return;
-        // On-screen display over the bottom of the video.
-        g.rect(0, SCREEN_H - 40, TOP_W, 40, color::shade);
-        g.text(req_.title, 8, SCREEN_H - 38, 0.48f, color::text, Align::Left, TOP_W - 120);
-        g.text(timeText(), TOP_W - 8, SCREEN_H - 38, 0.48f, color::dim, Align::Right);
-        g.progressBar(8, SCREEN_H - 14, TOP_W - 16, 4, fraction(), color::accent);
-        if (player_ && player_->paused()) g.text("PAUSED", TOP_W / 2.0f, 12, 0.6f, color::text, Align::Center);
     }
 
+    // --- Bottom screen: everything else -----------------------------------------------------------
+
     void drawBottom(Gfx& g) override {
-        g.text(req_.title, BOTTOM_W / 2.0f, 10, 0.58f, color::text, Align::Center, BOTTOM_W - 20);
-        if (!req_.subtitle.empty()) g.text(req_.subtitle, BOTTOM_W / 2.0f, 32, 0.45f, color::dim, Align::Center, BOTTOM_W - 20);
-        g.text(timeText(), BOTTOM_W / 2.0f, 64, 0.8f, color::text, Align::Center);
+        if (state_ == State::NextUp) {
+            drawUpNextBottom(g);
+            return;
+        }
+        // Title + where it plays from
+        std::string tag = streaming() ? "STREAMING" : "OFFLINE";
+        float tagW = g.textWidth(tag, 0.32f) + 10;
+        g.rect(BOTTOM_W - 12 - tagW, 9, tagW, 12, streaming() ? color::accent2 : color::good);
+        g.text(tag, BOTTOM_W - 12 - tagW + 5, 10, 0.32f, color::bg);
+        g.text(req_.title, 12, 6, 0.55f, color::text, Align::Left, BOTTOM_W - 36 - tagW);
+        if (!req_.subtitle.empty()) g.text(req_.subtitle, 12, 26, 0.4f, color::dim, Align::Left, BOTTOM_W - 24);
 
-        // Seek bar
-        float frac = dragTarget_ >= 0 && duration() > 0 ? static_cast<float>(dragTarget_ / duration()) : fraction();
-        g.progressBar(BAR_X, BAR_Y, BAR_W, BAR_H, frac, color::accent);
-        g.rect(BAR_X + BAR_W * frac - 2, BAR_Y - 4, 4, BAR_H + 8, color::text);
-        if (pendingSeek_ >= 0 || dragTarget_ >= 0)
+        if (state_ == State::Opening || state_ == State::Error) {
+            drawStatus(g);
+            drawHints(g);
+            return;
+        }
+
+        drawSeekBar(g);
+        if (inIntro()) {
+            g.outline(SKIP.x, SKIP.y, SKIP.w, SKIP.h, color::text, 1.5f);
+            g.text("Skip intro  \xE2\x80\xBA", SKIP.x + SKIP.w / 2, SKIP.y + 5, 0.45f, color::text, Align::Center);
+        } else if (player_ && player_->buffering()) {
+            drawLoading(g, 0, SKIP_Y - 4, BOTTOM_W, 30, "Buffering");
+        } else if (pendingSeek_ >= 0 || dragTarget_ >= 0) {
             g.text("Seek to " + jelly::formatDuration(static_cast<int64_t>(dragTarget_ >= 0 ? dragTarget_ : pendingSeek_)),
-                   BOTTOM_W / 2.0f, BAR_Y + 18, 0.45f, color::accent2, Align::Center);
-
-        std::string info = streaming() ? "Streaming" : "Offline file";
-        if (player_) info += " \xC2\xB7 " + player_->decoderName();
-        if (player_ && !player_->hasAudio()) info += " \xC2\xB7 no audio (dspfirm.cdc missing?)";
-        g.text(info, BOTTOM_W / 2.0f, 156, 0.4f, color::dim, Align::Center, BOTTOM_W - 16);
-        g.text(std::string(glyph::L) + glyph::R + " \xC2\xB1" "60s  " + glyph::DPad + " \xC2\xB1" "10s  " + glyph::Y + " info  " +
-                   glyph::X + " screen off",
-               BOTTOM_W / 2.0f, 174, 0.4f, color::dim, Align::Center, BOTTOM_W - 16);
-
-        ButtonBar bar;
-        bool paused = player_ && player_->paused();
-        bar.buttons = {{"-10s", 0, nullptr}, {paused ? "Play" : "Pause", 0, nullptr}, {"+10s", 0, nullptr},
-                       {"Screen off", 0, nullptr}, {"Stop", 0, nullptr}};
-        bar.draw(g);
+                   BOTTOM_W / 2.0f, SKIP_Y + 4, 0.45f, color::accent2, Align::Center);
+        }
+        drawTransport(g);
+        drawChips(g);
+        drawHints(g);
     }
 
 private:
     enum class State { Opening, Playing, Error, NextUp };
 
     bool streaming() const { return req_.localPath.empty(); }
+    bool hasNext() const { return nextDownload_.has_value() || nextItem_.has_value(); }
 
     double duration() const {
         if (player_ && player_->duration() > 0) return player_->duration();
@@ -189,19 +200,167 @@ private:
         return resumeAt_;
     }
 
-    float fraction() const {
+    bool inIntro() const {
+        if (req_.introEnd <= req_.introStart || state_ != State::Playing) return false;
+        double p = position();
+        return p >= req_.introStart && p < req_.introEnd - 1;
+    }
+
+    // --- drawing ----------------------------------------------------------------------------------
+
+    void drawSeekBar(Gfx& g) {
         double d = duration();
-        return d > 0 ? static_cast<float>(position() / d) : 0;
+        float frac = d > 0 ? static_cast<float>((dragTarget_ >= 0 ? dragTarget_ : position()) / d) : 0;
+        frac = std::clamp(frac, 0.0f, 1.0f);
+        g.rect(BAR_X, BAR_Y, BAR_W, BAR_H, color::panelHi);
+        if (d > 0 && req_.introEnd > req_.introStart) {
+            float a = static_cast<float>(req_.introStart / d), b = static_cast<float>(req_.introEnd / d);
+            g.rect(BAR_X + BAR_W * a, BAR_Y, BAR_W * (b - a), BAR_H, color::rgba(74, 80, 112));
+        }
+        g.rect(BAR_X, BAR_Y, BAR_W * frac, BAR_H, color::accent);
+        g.circle(BAR_X + BAR_W * frac, BAR_Y + BAR_H / 2, 7, color::text);
+
+        int64_t pos = static_cast<int64_t>(position());
+        g.text(jelly::formatDuration(pos), BAR_X, BAR_Y + 10, 0.4f, color::dim);
+        if (d > 0) g.text("-" + jelly::formatDuration(static_cast<int64_t>(d) - pos), BAR_X + BAR_W, BAR_Y + 10, 0.4f,
+                          color::dim, Align::Right);
     }
 
-    std::string timeText() const {
-        std::string t = jelly::formatDuration(static_cast<int64_t>(position()));
-        if (duration() > 0) t += " / " + jelly::formatDuration(static_cast<int64_t>(duration()));
-        return t;
+    void button(Gfx& g, const Rect& r, bool enabled) {
+        g.roundRect(r.x, r.y, r.w, r.h, enabled ? color::panelHi : color::panel);
     }
 
-    bool osdVisible() const { return osdPinned_ || osGetTime() < osdUntil_ || (player_ && player_->paused()); }
-    void showOsd() { osdUntil_ = osGetTime() + 3000; }
+    void drawTransport(Gfx& g) {
+        button(g, BACK10, true);
+        g.text("-10s", BACK10.x + BTN_W / 2, ROW_Y - 8, 0.45f, color::text, Align::Center);
+        button(g, FWD10, true);
+        g.text("+10s", FWD10.x + BTN_W / 2, ROW_Y - 8, 0.45f, color::text, Align::Center);
+
+        float cx = PLAY.x + PLAY_R, cy = ROW_Y;
+        g.circle(cx, cy, PLAY_R, color::accent);
+        if (player_ && player_->paused()) {
+            g.triangle(cx - 7, cy - 11, cx - 7, cy + 11, cx + 11, cy, color::text);
+        } else {
+            g.rect(cx - 9, cy - 10, 6, 20, color::text);
+            g.rect(cx + 3, cy - 10, 6, 20, color::text);
+        }
+
+        // Next episode: ▶| icon
+        bool next = hasNext();
+        button(g, NEXT, next);
+        u32 ink = next ? color::text : color::dim;
+        float nx = NEXT.x + BTN_W / 2;
+        g.triangle(nx - 9, cy - 9, nx - 9, cy + 9, nx + 5, cy, ink);
+        g.rect(nx + 6, cy - 9, 3, 18, ink);
+    }
+
+    void drawChips(Gfx& g) {
+        int boost = App::get().config.volumeBoost;
+        g.roundRect(BOOST.x, BOOST.y, BOOST.w, BOOST.h, color::panel);
+        g.speaker(BOOST.x + 8, BOOST.y + 5, 14, color::dim);
+        g.text(boost == 1 ? "Boost off" : "Boost " + std::to_string(boost) + "\xC3\x97", BOOST.x + 27, BOOST.y + 5, 0.4f,
+               color::dim);
+        g.roundRect(SCREEN.x, SCREEN.y, SCREEN.w, SCREEN.h, color::panel);
+        g.text("Bottom screen off", SCREEN.x + SCREEN.w / 2, SCREEN.y + 5, 0.4f, color::dim, Align::Center);
+    }
+
+    /// Hint strip with drawn d-pad arrows and a speaker, so nothing depends on font glyphs.
+    void drawHints(Gfx& g) {
+        const float y = SCREEN_H - HINT_H;
+        g.rect(0, y, BOTTOM_W, HINT_H, color::panel);
+        const u32 ink = color::dim;
+        float x = 8;
+        auto label = [&](const std::string& s, u32 c) { x += g.text(s, x, y + 3, 0.4f, c) + 12; };
+        auto glyphKey = [&](const char* gl) { x += g.text(gl, x, y + 2, 0.45f, color::text) + 3; };
+        if (state_ == State::Opening) {
+            glyphKey(glyph::B);
+            label("Cancel", ink);
+            return;
+        }
+        if (state_ == State::Error) {
+            glyphKey(glyph::A);
+            label("Retry", color::text);
+            glyphKey(glyph::B);
+            label("Back", ink);
+            return;
+        }
+        bool paused = player_ && player_->paused();
+        glyphKey(glyph::A);
+        label(paused ? "Play" : "Pause", color::text);
+        if (inIntro()) {
+            glyphKey(glyph::Y);
+            label("Skip intro", ink);
+        }
+        // ◀▶ 10s
+        float cy = y + HINT_H / 2;
+        g.triangle(x, cy, x + 5, cy - 4, x + 5, cy + 4, ink);
+        g.triangle(x + 12, cy, x + 7, cy - 4, x + 7, cy + 4, ink);
+        x += 15;
+        label("10s", ink);
+        // ▲▼ + speaker
+        g.triangle(x + 3, cy - 6, x, cy - 1, x + 6, cy - 1, ink);
+        g.triangle(x + 3, cy + 6, x, cy + 1, x + 6, cy + 1, ink);
+        x += 9;
+        g.speaker(x, y + 3, 12, ink);
+        x += 24;
+        glyphKey(glyph::B);
+        label("Stop", ink);
+    }
+
+    void drawStatus(Gfx& g) {
+        if (state_ == State::Opening) {
+            drawLoading(g, 0, 70, BOTTOM_W, 40, streaming() ? "Your server is converting the video" : "Opening");
+        } else {
+            g.text("Playback stopped", BOTTOM_W / 2.0f, 60, 0.6f, color::bad, Align::Center);
+            g.wrapped(error_, 16, 90, 0.45f, color::text, BOTTOM_W - 32, 6);
+        }
+    }
+
+    ImageCache::Source nextImage() const {
+        if (nextDownload_) return thumbFor(*nextDownload_, 384, 216);
+        if (nextItem_) return stillFor(*nextItem_, 384, 216);
+        return {};
+    }
+
+    std::string nextLabel() const {
+        if (nextDownload_) return nextDownload_->label();
+        if (nextItem_) return nextItem_->label();
+        return "";
+    }
+
+    void drawUpNextTop(Gfx& g) {
+        g.rect(0, 0, TOP_W, SCREEN_H, color::panelHi);
+        if (const Texture* t = App::get().images.get(nextImage())) g.imageCover(*t, 0, 0, TOP_W, SCREEN_H);
+        g.gradient(0, 90, TOP_W, 150, color::rgba(16, 18, 26, 0), color::rgba(16, 18, 26, 0), color::bg, color::bg);
+        g.text("UP NEXT", 16, 160, 0.42f, color::accent);
+        g.text(nextLabel(), 16, 176, 0.7f, color::text, Align::Left, 300);
+        g.text(nextDownload_ ? "Saved on SD" : "Streams from your server", 16, 202, 0.42f, color::dim);
+        // Countdown ring
+        float cx = TOP_W - 44, cy = 196;
+        u64 now = osGetTime();
+        float left = countdownUntil_ > now ? (countdownUntil_ - now) / 5000.0f : 0;
+        g.circle(cx, cy, 26, color::accent);
+        g.circle(cx, cy, 21, color::bg);
+        g.rect(cx - 26, cy - 26, 52, 52 * (1 - left), color::rgba(16, 18, 26, 160));
+        g.text(std::to_string(static_cast<int>(left * 5) + 1), cx, cy - 12, 0.8f, color::text, Align::Center);
+    }
+
+    void drawUpNextBottom(Gfx& g) {
+        g.text("Finished: " + req_.title, BOTTOM_W / 2.0f, 24, 0.42f, color::dim, Align::Center, BOTTOM_W - 24);
+        g.roundRect(PLAY_NEXT_BIG.x, PLAY_NEXT_BIG.y, PLAY_NEXT_BIG.w, PLAY_NEXT_BIG.h, color::accent);
+        g.text("Play next episode", BOTTOM_W / 2.0f, PLAY_NEXT_BIG.y + 14, 0.6f, color::text, Align::Center);
+        g.roundRect(BACK_BIG.x, BACK_BIG.y, BACK_BIG.w, BACK_BIG.h, color::panelHi);
+        g.text("Back to the show", BOTTOM_W / 2.0f, BACK_BIG.y + 11, 0.5f, color::text, Align::Center);
+        const float y = SCREEN_H - HINT_H;
+        g.rect(0, y, BOTTOM_W, HINT_H, color::panel);
+        float x = 8;
+        x += g.text(glyph::A, x, y + 2, 0.45f, color::text) + 3;
+        x += g.text("Play now", x, y + 3, 0.4f, color::text) + 14;
+        x += g.text(glyph::B, x, y + 2, 0.45f, color::text) + 3;
+        g.text("Back to show", x, y + 3, 0.4f, color::dim);
+    }
+
+    // --- actions ----------------------------------------------------------------------------------
 
     void open(double at) {
         auto& a = App::get();
@@ -238,14 +397,14 @@ private:
             [this, p, hw, fast](std::string err) {
                 if (err.empty() && !p->start(hw, fast, err) && err.empty()) err = "Could not start playback";
                 if (!err.empty()) {
-                    error_ = err + (streaming() ? "\n\nPress A to retry" : "");
+                    error_ = err;
                     state_ = State::Error;
                     return;
                 }
                 player_ = p;
+                player_->setGain(static_cast<float>(App::get().config.volumeBoost));
                 state_ = State::Playing;
                 nextSave_ = osGetTime() + 10000;
-                showOsd();
                 if (streaming() && App::get().online() && !reportedStart_) {
                     reportedStart_ = true;
                     auto id = req_.itemId, ms = req_.mediaSourceId, ps = playSessionId_;
@@ -255,22 +414,64 @@ private:
             });
     }
 
+    /// Next episode: a downloaded one first (works offline), else the next on the server.
+    void findNext() {
+        auto& a = App::get();
+        nextDownload_ = a.downloads->nextEpisode(req_.itemId);
+        if (nextDownload_ || req_.seriesId.empty() || !a.online()) return;
+        std::string seriesId = req_.seriesId;
+        int season = req_.seasonIndex, ep = req_.episodeIndex;
+        async<std::optional<jelly::Item>>(
+            [seriesId, season, ep]() -> std::optional<jelly::Item> {
+                auto r = App::get().client->episodes(seriesId);
+                if (!r.ok) return std::nullopt;
+                for (const auto& e : r.value)
+                    if (std::make_pair(e.parentIndexNumber, e.indexNumber) > std::make_pair(season, ep)) return e;
+                return std::nullopt;
+            },
+            [this](std::optional<jelly::Item> next) {
+                if (!next) return;
+                auto d = App::get().downloads->find(next->id);
+                if (d && d->status == jelly::DownloadStatus::Completed)
+                    nextDownload_ = *d;
+                else
+                    nextItem_ = std::move(next);
+            });
+    }
+
+    void fetchIntro() {
+        std::string id = req_.itemId;
+        async<jelly::Result<std::pair<int64_t, int64_t>>>([id] { return App::get().client->introSegment(id); },
+                                                          [this](jelly::Result<std::pair<int64_t, int64_t>> r) {
+                                                              if (!r.ok) return;
+                                                              req_.introStart = static_cast<double>(r.value.first) / TICKS_PER_SECOND;
+                                                              req_.introEnd = static_cast<double>(r.value.second) / TICKS_PER_SECOND;
+                                                          });
+    }
+
     void togglePause() {
         if (!player_) return;
         player_->setPaused(!player_->paused());
         if (player_->paused()) savePosition();
     }
 
-    void toggleScreen() {
+    void toggleBottomScreen() {
         bottomOff_ = !bottomOff_;
         App::get().setBottomScreenOn(!bottomOff_);
+    }
+
+    void changeBoost(int delta) {
+        // Volume boost: the 3DS slider alone is often too quiet with headphones.
+        auto& cfg = App::get().config;
+        cfg.volumeBoost = std::max(1, std::min(3, cfg.volumeBoost + delta));
+        if (player_) player_->setGain(static_cast<float>(cfg.volumeBoost));
+        App::get().saveConfig();
     }
 
     void seekTo(double target) {
         if (!player_) return;
         double d = duration();
         target = std::max(0.0, d > 0 ? std::min(target, d - 2) : target);
-        showOsd();
         if (player_->seekable()) {
             player_->seek(target);
         } else {
@@ -282,17 +483,14 @@ private:
     void seekBy(double delta) { seekTo(position() + delta); }
 
     void handleTap(int x, int y) {
-        if (y >= SCREEN_H - ButtonBar::HEIGHT) {
-            int button = x * 5 / BOTTOM_W;
-            switch (button) {
-            case 0: seekBy(-10); break;
-            case 1: togglePause(); break;
-            case 2: seekBy(10); break;
-            case 3: toggleScreen(); break;
-            case 4: finish(); break;
-            }
-            showOsd();
-        } else if (y >= BAR_Y - 10 && y <= BAR_Y + BAR_H + 10 && duration() > 0) {
+        if (BACK10.hit(x, y)) seekBy(-10);
+        else if (FWD10.hit(x, y)) seekBy(10);
+        else if (PLAY.hit(x, y)) togglePause();
+        else if (NEXT.hit(x, y) && hasNext()) playNextNow();
+        else if (SKIP.hit(x, y) && inIntro()) seekTo(req_.introEnd);
+        else if (BOOST.hit(x, y)) changeBoost(App::get().config.volumeBoost == 3 ? -2 : 1);
+        else if (SCREEN.hit(x, y)) toggleBottomScreen();
+        else if (y >= BAR_Y - 12 && y <= BAR_Y + BAR_H + 12 && duration() > 0) {
             seekTo(std::clamp((x - BAR_X) / BAR_W, 0.0f, 1.0f) * duration());
             dragTarget_ = -1;
         }
@@ -312,7 +510,8 @@ private:
         App::get().tasks.run([id, ms, ps, ticks, paused] { App::get().client->reportProgress(id, ms, ticks, ps, paused); });
     }
 
-    void finish() {
+    /// Saves and reports the current position, then closes the player (stays on the stack until pop).
+    void stopAndReport() {
         auto& a = App::get();
         savePosition();
         if (a.online()) {
@@ -325,7 +524,31 @@ private:
             });
         }
         player_.reset();
-        a.pop();
+    }
+
+    void finish() {
+        stopAndReport();
+        App::get().pop();
+    }
+
+    void startNext() {
+        auto& a = App::get();
+        if (nextDownload_) {
+            auto next = *nextDownload_;
+            a.pop();
+            playDownload(next, false);
+        } else if (nextItem_) {
+            auto next = *nextItem_;
+            a.pop();
+            playItem(next, false);
+        } else {
+            a.pop();
+        }
+    }
+
+    void playNextNow() {
+        stopAndReport();
+        startNext();
     }
 
     void onEnded() {
@@ -334,8 +557,7 @@ private:
         if (streaming() && duration() > 0 && position() < duration() - 30) {
             resumeAt_ = position();
             savePosition();
-            error_ = "The stream ended early.\n\nPress A to continue from " +
-                     jelly::formatDuration(static_cast<int64_t>(resumeAt_));
+            error_ = "The stream ended early.\nA: continue from " + jelly::formatDuration(static_cast<int64_t>(resumeAt_));
             player_.reset();
             state_ = State::Error;
             return;
@@ -348,8 +570,7 @@ private:
             a.tasks.run([id] { App::get().sync->pushItem(id); });
         }
         player_.reset();
-        next_ = a.downloads->nextEpisode(req_.itemId);
-        if (!streaming() && next_) {
+        if (hasNext()) {
             state_ = State::NextUp;
             countdownUntil_ = osGetTime() + 5000;
         } else {
@@ -367,11 +588,10 @@ private:
     u64 pendingSeekAt_ = 0;
     double dragTarget_ = -1;
     u64 nextSave_ = 0;
-    u64 osdUntil_ = 0;
-    bool osdPinned_ = false;
     bool bottomOff_ = false;
     bool reportedStart_ = false;
-    std::optional<jelly::DownloadItem> next_;
+    std::optional<jelly::DownloadItem> nextDownload_;
+    std::optional<jelly::Item> nextItem_;
     u64 countdownUntil_ = 0;
 };
 

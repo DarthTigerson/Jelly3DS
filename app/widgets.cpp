@@ -189,10 +189,7 @@ void GridView::draw(Gfx& g, float x, float y, float w, float h) {
         if (sel) g.rect(cx - 3, cy - 3, posterW + 6, posterH + 6, color::accent);
         g.rect(cx, cy, posterW, posterH, color::panel);
         if (const Texture* t = App::get().images.get(it.image)) {
-            // Fill the poster box (crop the overflow by drawing centred at cover scale).
-            float s = std::min(posterW / t->width, posterH / t->height);
-            float dw = t->width * s, dh = t->height * s;
-            g.image(*t, cx + (posterW - dw) / 2, cy + (posterH - dh) / 2, dw, dh);
+            g.imageCover(*t, cx, cy, posterW, posterH);
         } else {
             g.wrapped(it.title, cx + 4, cy + 6, 0.4f, color::dim, posterW - 8, 5);
         }
@@ -232,6 +229,55 @@ void ButtonBar::draw(Gfx& g) {
         const auto& b = buttons[i];
         if (i > 0) g.rect(i * w, y + 6, 1, HEIGHT - 12, color::panelHi);
         g.text(b.label, i * w + w / 2, y + 9, 0.47f, b.enabled ? color::text : color::dim, Align::Center, w - 6);
+    }
+}
+
+bool HintStrip::update(const Input& in) {
+    for (size_t i = 0; i < hints.size(); ++i) {
+        const auto& h = hints[i];
+        if (!h.action) continue;
+        bool tapped = in.tapped && in.tapY >= SCREEN_H - HEIGHT - 4 && i < spans_.size() && in.tapX >= spans_[i].first &&
+                      in.tapX < spans_[i].second;
+        if (tapped || (h.keyMask && (in.down & h.keyMask))) {
+            auto action = h.action;  // may rebuild `hints`
+            action();
+            return true;
+        }
+    }
+    return false;
+}
+
+void HintStrip::draw(Gfx& g) {
+    const float y = SCREEN_H - HEIGHT;
+    g.rect(0, y, BOTTOM_W, HEIGHT, color::panel);
+    // Measure, then spread the hints evenly across the strip.
+    std::vector<float> keyW, labelW;
+    float total = 0;
+    for (const auto& h : hints) {
+        bool pill = h.key.size() > 3;  // words like SELECT, not a single glyph
+        float kw = pill ? g.textWidth(h.key, 0.3f) + 6 : g.textWidth(h.key, 0.45f);
+        float lw = g.textWidth(h.label, 0.4f);
+        keyW.push_back(kw);
+        labelW.push_back(lw);
+        total += kw + 3 + lw;
+    }
+    float gap = hints.size() > 1 ? (BOTTOM_W - 16 - total) / (hints.size() - 1) : 0;
+    float x = 8;
+    spans_.clear();
+    for (size_t i = 0; i < hints.size(); ++i) {
+        const auto& h = hints[i];
+        float start = x;
+        if (h.key.size() > 3) {
+            g.outline(x, y + 4, keyW[i], 10, color::dim);
+            g.text(h.key, x + keyW[i] / 2, y + 5, 0.3f, color::dim, Align::Center);
+        } else {
+            g.text(h.key, x, y + 2, 0.45f, color::text);
+        }
+        x += keyW[i] + 3;
+        g.text(h.label, x, y + 3, 0.4f, i == 0 ? color::text : color::dim);
+        x += labelW[i];
+        spans_.push_back({start - gap / 2, x + gap / 2});
+        x += gap;
     }
 }
 

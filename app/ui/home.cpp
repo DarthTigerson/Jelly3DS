@@ -1,3 +1,5 @@
+#include "cover_page.hpp"
+#include "downloads_page.hpp"
 #include "screens.hpp"
 
 #include "jelly/util.hpp"
@@ -12,7 +14,8 @@ using jelly::DownloadStatus;
 
 enum Tab { DOWNLOADS = 0, CONTINUE, LIBRARIES, SETTINGS, TAB_COUNT };
 const char* TAB_NAMES[] = {"Downloads", "Continue", "Libraries", "Settings"};
-constexpr float TAB_H = 30;
+constexpr float TAB_H = 28;
+constexpr float SHOULDER_W = 22;  // L / R markers at the ends of the tab bar
 
 class HomeScreen : public Screen {
 public:
@@ -21,6 +24,9 @@ public:
         bool haveDownloads = !a.downloads->items().empty();
         tab_ = haveDownloads ? DOWNLOADS : CONTINUE;
         list_.thumbW = 28;
+        grid_.columns = 2;  // library art is wide 16:9
+        grid_.posterW = 176;
+        grid_.posterH = 99;
         reload();
     }
 
@@ -28,14 +34,18 @@ public:
 
     void update(const Input& in) override {
         auto& a = App::get();
-        if (in.down & KEY_START) {
-            a.quit();
-            return;
-        }
+        (void)a;
         int newTab = tab_;
         if (in.down & KEY_R) newTab = (tab_ + 1) % TAB_COUNT;
         if (in.down & KEY_L) newTab = (tab_ + TAB_COUNT - 1) % TAB_COUNT;
-        if (in.tapped && in.tapY < TAB_H) newTab = std::min(TAB_COUNT - 1, in.tapX * TAB_COUNT / BOTTOM_W);
+        if (in.tapped && in.tapY < TAB_H) {
+            if (in.tapX < SHOULDER_W)
+                newTab = (tab_ + TAB_COUNT - 1) % TAB_COUNT;
+            else if (in.tapX >= BOTTOM_W - SHOULDER_W)
+                newTab = (tab_ + 1) % TAB_COUNT;
+            else
+                newTab = std::min(TAB_COUNT - 1, static_cast<int>((in.tapX - SHOULDER_W) * TAB_COUNT / (BOTTOM_W - 2 * SHOULDER_W)));
+        }
         if (newTab != tab_) {
             tab_ = static_cast<Tab>(newTab);
             list_.selected = 0;
@@ -44,10 +54,21 @@ public:
             return;
         }
 
-        if (tab_ == LIBRARIES)
-            grid_.update(in);
-        else
-            list_.update(in, LIST_H);
+        if (tab_ == DOWNLOADS) {
+            if (++frames_ % 20 == 0) downloadsPage_.refresh();  // live progress
+            downloadsPage_.update(in);
+            return;
+        }
+        if (tab_ == CONTINUE) {
+            continue_.update(in);
+            if (++frames_ % 30 == 0) continue_.refreshBadges();  // download progress
+            return;
+        }
+        if (tab_ == LIBRARIES) {
+            updateLibraries(in);
+            return;
+        }
+        list_.update(in, LIST_H);
         buildButtons();
         if (buttons_.update(in)) return;
 
@@ -59,8 +80,13 @@ public:
     void drawTop(Gfx& g) override {
         auto& a = App::get();
         std::string status = a.online() ? a.config.userName : (a.wifiConnected() ? "Server unreachable" : "Offline");
+        if (tab_ == DOWNLOADS) status = downloadsPage_.headerText();
         drawHeader(g, std::string("Jelly3DS \xC2\xB7 ") + TAB_NAMES[tab_], status);
-        if (loading_)
+        if (tab_ == DOWNLOADS)
+            downloadsPage_.drawTop(g, 28, LIST_H);
+        else if (tab_ == CONTINUE)
+            continue_.drawTop(g, 28, LIST_H);
+        else if (loading_)
             drawLoading(g, 0, 28, TOP_W, LIST_H);
         else if (tab_ == LIBRARIES)
             grid_.draw(g, 0, 28, TOP_W, LIST_H);
@@ -69,15 +95,29 @@ public:
     }
 
     void drawBottom(Gfx& g) override {
-        // Tabs
-        float w = static_cast<float>(BOTTOM_W) / TAB_COUNT;
+        // Tabs, with the shoulder buttons that switch them at either end
         g.rect(0, 0, BOTTOM_W, TAB_H, color::panel);
+        g.text(glyph::L, SHOULDER_W / 2, 6, 0.5f, color::dim, Align::Center);
+        g.text(glyph::R, BOTTOM_W - SHOULDER_W / 2, 6, 0.5f, color::dim, Align::Center);
+        float w = (BOTTOM_W - 2 * SHOULDER_W) / TAB_COUNT;
         for (int i = 0; i < TAB_COUNT; ++i) {
             bool sel = i == tab_;
-            if (sel) g.rect(i * w, TAB_H - 3, w, 3, color::accent);
-            g.text(TAB_NAMES[i], i * w + w / 2, 7, 0.47f, sel ? color::text : color::dim, Align::Center, w - 4);
+            float tx = SHOULDER_W + i * w;
+            if (sel) g.rect(tx, TAB_H - 3, w, 3, color::accent);
+            g.text(TAB_NAMES[i], tx + w / 2, 7, 0.44f, sel ? color::text : color::dim, Align::Center, w - 2);
         }
-        g.text(std::string(glyph::L) + "/" + glyph::R, 4, TAB_H + 2, 0.38f, color::dim);
+        if (tab_ == CONTINUE) {
+            continue_.drawBottom(g, TAB_H);
+            return;
+        }
+        if (tab_ == DOWNLOADS) {
+            downloadsPage_.drawBottom(g, TAB_H);
+            return;
+        }
+        if (tab_ == LIBRARIES) {
+            drawLibraryDetail(g, TAB_H);
+            return;
+        }
 
         const ListRow* row = currentRow();
         float top = TAB_H + 2, bottom = SCREEN_H - ButtonBar::HEIGHT;
@@ -98,6 +138,81 @@ public:
 private:
     static constexpr float LIST_H = SCREEN_H - 28;
 
+    static CoverPage::Options continueOptions() {
+        CoverPage::Options o;
+        o.viewKey = "continue";
+        o.defaultView = "shelf";
+        o.heroLabel = "CONTINUE WATCHING";
+        o.hints = [](const jelly::Item* item) {
+            std::vector<Hint> h;
+            if (!item) return h;
+            jelly::Item copy = *item;
+            bool resume = resumeTicks(copy.id, &copy.userData) > 0;
+            bool played = isPlayed(copy.id, &copy.userData);
+            h.push_back({glyph::A, resume ? "Resume" : "Play", KEY_A, [copy] { playItem(copy, false); }});
+            h.push_back({glyph::Y, "More", KEY_Y, [copy] { openItemMenu(copy); }});
+            h.push_back({glyph::X, played ? "Unwatch" : "Watched", KEY_X,
+                         [copy, played] { toggleWatched(copy.id, !played, copy.runTimeTicks); }});
+            return h;
+        };
+        return o;
+    }
+
+    // --- Libraries tab: wide 16:9 cards (library art is wide) + recently added ------------------
+
+    void openLibrary(const jelly::Item& lib) { App::get().push(makeFolderScreen(lib)); }
+
+    void updateLibraries(const Input& in) {
+        grid_.update(in);
+        libraryHints_.hints.clear();
+        const ListRow* row = grid_.current();
+        if (row && row->tag >= 0 && row->tag < static_cast<int>(items_.size())) {
+            jelly::Item lib = items_[row->tag];
+            libraryHints_.hints.push_back({glyph::A, "Open", KEY_A, [this, lib] { openLibrary(lib); }});
+            requestLatest(lib.id);
+        }
+        libraryHints_.update(in);
+    }
+
+    void requestLatest(const std::string& id) {
+        if (latest_.count(id) || latestLoading_[id]) return;
+        latestLoading_[id] = true;
+        loadCachedThenFresh<std::vector<jelly::Item>>(
+            [id](jelly::Source src) { return App::get().client->latest(id, 5, src); },
+            [this, id](jelly::Result<std::vector<jelly::Item>> r, bool fresh) {
+                if (fresh) latestLoading_[id] = false;
+                if (r.ok || !latest_.count(id)) latest_[id] = r.ok ? std::move(r.value) : std::vector<jelly::Item>{};
+            });
+    }
+
+    void drawLibraryDetail(Gfx& g, float top) {
+        const ListRow* row = grid_.current();
+        if (row && row->tag >= 0 && row->tag < static_cast<int>(items_.size())) {
+            const auto& lib = items_[row->tag];
+            float x = 12, y = top + 10;
+            g.text(lib.name, x, y, 0.7f, color::text, Align::Left, BOTTOM_W - 24);
+            std::string kind = lib.collectionType == "tvshows" ? "TV shows" : lib.collectionType == "movies" ? "Movies" : "Library";
+            g.text(kind, x, y + 24, 0.42f, color::dim);
+            g.text("RECENTLY ADDED", x, y + 46, 0.38f, color::accent);
+            auto it = latest_.find(lib.id);
+            if (it == latest_.end()) {
+                g.text(App::get().online() ? "Loading\xE2\x80\xA6" : "Offline", x, y + 64, 0.4f, color::dim);
+            } else if (it->second.empty()) {
+                g.text("Nothing new", x, y + 64, 0.4f, color::dim);
+            } else {
+                float px = x;
+                for (const auto& item : it->second) {
+                    g.rect(px, y + 62, 50, 75, color::panelHi);
+                    if (const Texture* t = App::get().images.get(coverFor(item, 50, 75))) g.imageCover(*t, px, y + 62, 50, 75);
+                    g.text(item.type == "Episode" ? item.seriesName : item.name, px, y + 140, 0.32f, color::dim,
+                           Align::Left, 50);
+                    px += 58;
+                }
+            }
+        }
+        libraryHints_.draw(g);
+    }
+
     const ListRow* currentRow() const { return tab_ == LIBRARIES ? grid_.current() : list_.current(); }
 
     void reload() {
@@ -106,7 +221,7 @@ private:
         list_.thumbW = tab_ == SETTINGS ? 0 : 64;
         list_.rowHeight = tab_ == SETTINGS ? 40 : 46;
         switch (tab_) {
-        case DOWNLOADS: buildDownloadRows(); break;
+        case DOWNLOADS: downloadsPage_.refresh(); break;
         case CONTINUE: loadContinue(); break;
         case LIBRARIES: loadLibraries(); break;
         case SETTINGS: buildSettingsRows(); break;
@@ -174,64 +289,45 @@ private:
     // --- Continue / Libraries -----------------------------------------------------------------
 
     void loadContinue() {
-        auto& a = App::get();
-        items_.clear();
-        list_.setRows({});
-        if (!a.online()) {
-            loading_ = false;
-            list_.emptyText = "Offline - your downloads are in the Downloads tab";
-            return;
-        }
-        loading_ = true;
-        async<std::vector<jelly::Item>>(
-            [] {
+        continue_.setLoading(true);
+        loadCachedThenFresh<std::vector<jelly::Item>>(
+            [](jelly::Source src) {
                 auto& c = *App::get().client;
-                std::vector<jelly::Item> out;
-                auto resume = c.resumeItems();
-                if (resume.ok) out = resume.value;
-                auto next = c.nextUp();
+                auto resume = c.resumeItems(src);
+                auto next = c.nextUp(src);
+                if (!resume.ok && !next.ok) return jelly::Result<std::vector<jelly::Item>>::failure(resume.error);
+                std::vector<jelly::Item> out = resume.ok ? resume.value : std::vector<jelly::Item>{};
                 if (next.ok)
                     for (auto& i : next.value)
                         if (std::none_of(out.begin(), out.end(), [&](const jelly::Item& x) { return x.id == i.id; }))
                             out.push_back(i);
-                return out;
+                return jelly::Result<std::vector<jelly::Item>>::success(std::move(out));
             },
-            [this](std::vector<jelly::Item> items) {
-                if (tab_ != CONTINUE) return;
-                items_ = std::move(items);
-                std::vector<ListRow> rows;
-                for (size_t i = 0; i < items_.size(); ++i) rows.push_back(itemRow(items_[i], static_cast<int>(i)));
-                list_.emptyText = "Nothing in progress";
-                list_.setRows(std::move(rows));
-                loading_ = false;
+            [this](jelly::Result<std::vector<jelly::Item>> r, bool) {
+                continue_.setLoading(false);
+                continue_.setEmptyText(r.ok ? "Nothing in progress - start an episode and it shows up here"
+                                            : "Offline - your downloads are in the Downloads tab");
+                continue_.setItems(r.ok ? std::move(r.value) : std::vector<jelly::Item>{});
             });
     }
 
     void loadLibraries() {
-        auto& a = App::get();
-        items_.clear();
-        grid_.setItems({});
-        if (!a.online()) {
-            loading_ = false;
-            grid_.emptyText = "Offline - libraries need your server";
-            return;
-        }
-        loading_ = true;
-        async<jelly::Result<std::vector<jelly::Item>>>([] { return App::get().client->views(); },
-                                                       [this](jelly::Result<std::vector<jelly::Item>> r) {
-                                                           if (tab_ != LIBRARIES) return;
-                                                           loading_ = false;
-                                                           if (!r.ok) {
-                                                               grid_.emptyText = r.error;
-                                                               return;
-                                                           }
-                                                           items_ = std::move(r.value);
-                                                           std::vector<ListRow> rows;
-                                                           for (size_t i = 0; i < items_.size(); ++i)
-                                                               rows.push_back(itemRow(items_[i], static_cast<int>(i)));
-                                                           grid_.emptyText = "No libraries";
-                                                           grid_.setItems(std::move(rows));
-                                                       });
+        loading_ = items_.empty();
+        loadCachedThenFresh<std::vector<jelly::Item>>(
+            [](jelly::Source src) { return App::get().client->views(src); },
+            [this](jelly::Result<std::vector<jelly::Item>> r, bool) {
+                loading_ = false;
+                if (tab_ != LIBRARIES) return;
+                if (!r.ok) {
+                    grid_.emptyText = r.error;
+                    return;
+                }
+                items_ = std::move(r.value);
+                std::vector<ListRow> rows;
+                for (size_t i = 0; i < items_.size(); ++i) rows.push_back(itemRow(items_[i], static_cast<int>(i)));
+                grid_.emptyText = "No libraries";
+                grid_.setItems(std::move(rows));
+            });
     }
 
     ListRow itemRow(const jelly::Item& item, int tag) {
@@ -251,13 +347,14 @@ private:
         r.badgeColor = badge.color;
         int64_t resume = resumeTicks(item.id, &item.userData);
         if (resume > 0 && item.runTimeTicks > 0) r.progress = static_cast<float>(resume) / item.runTimeTicks;
-        r.image = tab_ == LIBRARIES ? posterFor(item, 64, 96) : posterFor(item, 64, 36);
+        r.image = tab_ == LIBRARIES ? posterFor(item, 176, 99) : posterFor(item, 64, 36);
+        if (tab_ == LIBRARIES) r.title = item.name;
         return r;
     }
 
     // --- Settings -----------------------------------------------------------------------------
 
-    enum SettingRow { S_PROFILE, S_AUDIO, S_SUBS, S_TLS, S_SYNC, S_SERVER, S_STORAGE, S_LOGOUT };
+    enum SettingRow { S_PROFILE, S_VOLUME, S_AUDIO, S_SUBS, S_TLS, S_SYNC, S_SERVER, S_STORAGE, S_LOGOUT, S_EXIT };
 
     void buildSettingsRows() {
         auto& a = App::get();
@@ -267,6 +364,7 @@ private:
         int64_t free = sdFreeBytes();
         std::vector<ListRow> rows = {
             {"Video quality for downloads & streams", profile, "", color::dim, -1, false, {}, S_PROFILE},
+            {"Volume boost", c.volumeBoost == 1 ? "Off" : std::to_string(c.volumeBoost) + "\xC3\x97 louder (Up/Down while watching)", "", color::dim, -1, false, {}, S_VOLUME},
             {"Preferred audio language", c.audioLanguage.empty() ? "Server default" : c.audioLanguage, "", color::dim, -1, false, {}, S_AUDIO},
             {"Burn-in subtitles", c.subtitleLanguage.empty() ? "None" : c.subtitleLanguage, "", color::dim, -1, false, {}, S_SUBS},
             {"Verify HTTPS certificates", c.verifyTls ? "On" : "Off (allows self-signed)", "", color::dim, -1, false, {}, S_TLS},
@@ -276,6 +374,7 @@ private:
              a.online() ? color::good : color::bad, -1, false, {}, S_SERVER},
             {"SD card free space", free >= 0 ? jelly::formatSize(free) : "unknown", "", color::dim, -1, false, {}, S_STORAGE},
             {"Log out", "Downloads stay on the SD card", "", color::dim, -1, false, {}, S_LOGOUT},
+            {"Exit Jelly3DS", "Back to the HOME Menu / Homebrew Launcher", "", color::dim, -1, false, {}, S_EXIT},
         };
         list_.setRows(std::move(rows));
         loading_ = false;
@@ -291,6 +390,13 @@ private:
                                                                     : jelly::ProfileChoice::Auto;
             a.saveConfig();
             break;
+        case S_VOLUME:
+            c.volumeBoost = c.volumeBoost % 3 + 1;
+            a.saveConfig();
+            break;
+        case S_EXIT:
+            a.quit();
+            return;
         case S_AUDIO: {
             std::string v = c.audioLanguage;
             if (keyboard("3-letter language code (eng, jpn, fre...) - empty for default", v, false, 3)) {
@@ -383,13 +489,17 @@ private:
             break;
         default: break;
         }
-        buttons_.buttons.push_back({std::string(glyph::Start) + " Exit", KEY_START, [] { App::get().quit(); }});
         (void)a;
     }
 
     Tab tab_ = DOWNLOADS;
     ListView list_;
     GridView grid_;
+    CoverPage continue_{continueOptions()};
+    DownloadsPage downloadsPage_;
+    HintStrip libraryHints_;
+    std::map<std::string, std::vector<jelly::Item>> latest_;  // library id → recently added
+    std::map<std::string, bool> latestLoading_;
     ButtonBar buttons_;
     DetailCache detail_;
     std::vector<jelly::DownloadItem> downloads_;

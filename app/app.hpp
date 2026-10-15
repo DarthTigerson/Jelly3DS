@@ -50,6 +50,8 @@ public:
     void push(std::unique_ptr<Screen> s);
     void pop();
     void replaceAll(std::unique_ptr<Screen> s);
+    /// Pops everything above the root (Home) screen.
+    void goHome();
 
     void toast(const std::string& message);
     void saveConfig();
@@ -63,6 +65,8 @@ public:
     bool wifiConnected() const { return wifi_; }
 
     void setBottomScreenOn(bool on);
+    /// Both backlights off until any button is pressed (saves battery while downloading).
+    void screensOff();
     bool bottomScreenOn() const { return bottomOn_; }
     /// Called by the player: true while video is playing (keeps the downloader polite on Old 3DS).
     void setPlaying(bool playing) { playing_ = playing; }
@@ -71,6 +75,7 @@ public:
     jelly::Config config;
     std::unique_ptr<jelly::CurlHttp> http;
     std::unique_ptr<jelly::Client> client;
+    std::unique_ptr<jelly::ResponseCache> responseCache;
     std::unique_ptr<jelly::ProgressStore> progress;
     std::unique_ptr<jelly::DownloadManager> downloads;
     std::unique_ptr<jelly::SyncEngine> sync;
@@ -107,6 +112,11 @@ private:
     int touchStartX_ = 0, touchStartY_ = 0;
     int lastTouchX_ = 0, lastTouchY_ = 0;
     bool sleepBlocked_ = false;
+    bool lidDark_ = false;      // backlights off because the lid closed during a download
+    bool screensOff_ = false;   // backlights off on request
+    bool ptmSysm_ = false;
+    u64 nextLidPoll_ = 0;
+    void manageSleep();
     Thread downloadThread_;
     aptHookCookie aptCookie_{};
 };
@@ -123,6 +133,8 @@ public:
     virtual bool overlay() const { return false; }
     /// Player sleep/suspend hook.
     virtual void onSuspend() {}
+    /// START returns to the Home screen from here (the player opts out: B stops it properly).
+    virtual bool startGoesHome() const { return true; }
     /// True while the screen wants the bottom backlight to stay off (headphone mode in the player).
     virtual bool keepsBottomOff() const { return false; }
 
@@ -138,6 +150,28 @@ protected:
                 if (token && *token) done(std::move(*result));
             });
         });
+    }
+
+    /// Shows the copy saved on the SD card straight away, then the server's answer when it arrives.
+    /// `done(result, fresh)` may run twice. `job` runs on the worker thread: capture copies, never `this`.
+    template <typename T>
+    void loadCachedThenFresh(std::function<jelly::Result<T>(jelly::Source)> job,
+                             std::function<void(jelly::Result<T>, bool)> done) {
+        async<jelly::Result<T>>([job] { return job(jelly::Source::Cache); },
+                                [this, job, done](jelly::Result<T> cached) {
+                                    bool had = cached.ok;
+                                    if (had) done(std::move(cached), false);
+                                    if (!App::get().online()) {
+                                        if (!had)
+                                            done(jelly::Result<T>::failure("Offline - not saved on this console yet"), true);
+                                        return;
+                                    }
+                                    async<jelly::Result<T>>([job] { return job(jelly::Source::Network); },
+                                                            [done, had](jelly::Result<T> fresh) {
+                                                                // Keep showing the saved list if the server fails.
+                                                                if (fresh.ok || !had) done(std::move(fresh), true);
+                                                            });
+                                });
     }
 
     std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);

@@ -23,6 +23,9 @@ add_executable(jelly3ds
     app/ui/browse.cpp
     app/ui/download_options.cpp
     app/ui/player_screen.cpp
+    app/ui/cover_page.cpp
+    app/ui/library_screens.cpp
+    app/ui/downloads_page.cpp
 )
 target_compile_options(jelly3ds PRIVATE -Wall -O2)
 target_include_directories(jelly3ds PRIVATE app ${FFMPEG_3DS}/include)

@@ -39,6 +39,10 @@ struct DownloadItem {
     int64_t bytes = 0;
     std::string error;
     int64_t addedAt = 0;
+    std::string seriesPrimaryImageTag;
+    int64_t introStartTicks = -1;  // from the server's media segments, saved for offline Skip intro
+    int64_t introEndTicks = -1;
+    int64_t speedBps = 0;          // live transfer speed while downloading (not persisted)
 
     /// Rough final size from the profile bitrates (transcoded streams have no Content-Length).
     int64_t estimatedBytes() const;
@@ -55,7 +59,8 @@ struct DownloadOptions {
 /// Not threaded itself: the platform layer calls runNext() from a worker thread.
 class DownloadManager {
 public:
-    DownloadManager(Client& client, IHttp& http, std::string root, ClockFn clock = systemClock);
+    DownloadManager(Client& client, IHttp& http, std::string root, ClockFn clock = systemClock,
+                    ClockFn clockMs = systemClockMs);
 
     /// Loads the index; interrupted downloads go back to Queued.
     void load();
@@ -63,6 +68,14 @@ public:
     /// Queues a playable item. Returns false if it is already queued/downloaded (failed items are re-queued).
     bool enqueue(const Item& item, const DownloadOptions& options);
     void retry(const std::string& itemId);
+    void retryFailed();
+    /// Moves a queued item one place earlier in the queue.
+    void moveUp(const std::string& itemId);
+    /// A paused queue finishes nothing new (the running download is left to complete).
+    void setPaused(bool paused);
+    bool paused() const;
+    /// True while there is queued/running work and the queue is not paused.
+    bool active() const;
     /// Cancels a running download (it becomes Failed "Cancelled") or drops a queued one.
     void cancel(const std::string& itemId);
     /// Deletes files and forgets the item (cancelling it first when running).
@@ -81,6 +94,8 @@ public:
 
     std::string videoPath(const std::string& itemId) const;
     std::string thumbPath(const std::string& itemId) const;
+    /// 2:3 poster (the show's for an episode), so the Saved view has covers offline.
+    std::string posterPath(const std::string& itemId) const;
     const std::string& root() const { return root_; }
 
 private:
@@ -92,11 +107,13 @@ private:
     IHttp& http_;
     std::string root_;
     ClockFn clock_;
+    ClockFn clockMs_;
     mutable std::mutex mutex_;
     std::vector<DownloadItem> items_;
     std::string activeId_;
     std::atomic_bool cancel_{false};
     bool removeAfterCancel_ = false;
+    bool paused_ = false;
 };
 
 }  // namespace jelly

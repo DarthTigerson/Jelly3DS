@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <iterator>
+#include <memory>
 
 namespace jelly {
 
@@ -40,6 +42,9 @@ nlohmann::json toJson(const DownloadItem& d) {
         {"bytes", d.bytes},
         {"error", d.error},
         {"addedAt", d.addedAt},
+        {"seriesPrimaryImageTag", d.seriesPrimaryImageTag},
+        {"introStartTicks", d.introStartTicks},
+        {"introEndTicks", d.introEndTicks},
     };
 }
 
@@ -66,6 +71,9 @@ DownloadItem fromJson(const nlohmann::json& j) {
     d.bytes = j.value("bytes", int64_t{0});
     d.error = j.value("error", "");
     d.addedAt = j.value("addedAt", int64_t{0});
+    d.seriesPrimaryImageTag = j.value("seriesPrimaryImageTag", "");
+    d.introStartTicks = j.value("introStartTicks", int64_t{-1});
+    d.introEndTicks = j.value("introEndTicks", int64_t{-1});
     return d;
 }
 
@@ -105,12 +113,13 @@ std::string DownloadItem::label() const {
     return name;
 }
 
-DownloadManager::DownloadManager(Client& client, IHttp& http, std::string root, ClockFn clock)
-    : client_(client), http_(http), root_(std::move(root)), clock_(std::move(clock)) {}
+DownloadManager::DownloadManager(Client& client, IHttp& http, std::string root, ClockFn clock, ClockFn clockMs)
+    : client_(client), http_(http), root_(std::move(root)), clock_(std::move(clock)), clockMs_(std::move(clockMs)) {}
 
 std::string DownloadManager::dir(const std::string& itemId) const { return root_ + "/" + itemId; }
 std::string DownloadManager::videoPath(const std::string& itemId) const { return dir(itemId) + "/video.ts"; }
 std::string DownloadManager::thumbPath(const std::string& itemId) const { return dir(itemId) + "/thumb.jpg"; }
+std::string DownloadManager::posterPath(const std::string& itemId) const { return dir(itemId) + "/poster.jpg"; }
 
 void DownloadManager::load() {
     makeDirs(root_);
@@ -178,6 +187,7 @@ bool DownloadManager::enqueue(const Item& item, const DownloadOptions& options) 
     d.audioLabel = streamLabel(src, options.audioStreamIndex);
     d.subtitleLabel = streamLabel(src, options.subtitleStreamIndex);
     d.addedAt = clock_();
+    d.seriesPrimaryImageTag = item.seriesPrimaryImageTag;
     items_.push_back(std::move(d));
     saveLocked();
     return true;
@@ -223,7 +233,7 @@ bool DownloadManager::runNext() {
     DownloadItem job;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!activeId_.empty()) return false;
+        if (!activeId_.empty() || paused_) return false;
         auto it = std::find_if(items_.begin(), items_.end(),
                                [](const DownloadItem& d) { return d.status == DownloadStatus::Queued; });
         if (it == items_.end()) return false;
@@ -248,6 +258,22 @@ bool DownloadManager::runNext() {
                                 noCancel);
         if (!r.ok()) removeAll(thumbPath(job.itemId));
     }
+    if (!fileExists(posterPath(job.itemId))) {
+        std::atomic_bool noCancel{false};
+        bool show = job.type == "Episode" && !job.seriesId.empty();
+        auto r = http_.download(client_.imageUrl(show ? job.seriesId : job.itemId, show ? job.seriesPrimaryImageTag : "",
+                                                 160, 240),
+                                headers, posterPath(job.itemId), nullptr, noCancel);
+        if (!r.ok()) removeAll(posterPath(job.itemId));
+    }
+    // Intro timings, so Skip intro also works offline (only if the server has detected them).
+    if (auto intro = client_.introSegment(job.itemId); intro.ok) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (auto* d = findLocked(job.itemId)) {
+            d->introStartTicks = intro.value.first;
+            d->introEndTicks = intro.value.second;
+        }
+    }
 
     StreamRequest req;
     req.itemId = job.itemId;
@@ -260,9 +286,21 @@ bool DownloadManager::runNext() {
     const std::string url = buildStreamUrl(client_.server(), DeviceProfile::byId(job.profileId), req);
 
     const std::string partPath = itemDir + "/video.ts.part";
-    auto progress = [this, id = job.itemId](int64_t now, int64_t) {
+    auto lastBytes = std::make_shared<int64_t>(0);
+    auto lastTime = std::make_shared<int64_t>(clockMs_());
+    auto progress = [this, id = job.itemId, lastBytes, lastTime](int64_t now, int64_t) {
+        // Speed over windows of at least a second, smoothed so the ETA doesn't jump around.
+        int64_t t = clockMs_();
         std::lock_guard<std::mutex> lock(mutex_);
-        if (auto* d = findLocked(id)) d->bytes = now;
+        auto* d = findLocked(id);
+        if (!d) return;
+        d->bytes = now;
+        if (t - *lastTime >= 1000) {
+            int64_t bps = (now - *lastBytes) * 1000 / (t - *lastTime);
+            d->speedBps = d->speedBps ? (d->speedBps * 2 + bps) / 3 : bps;
+            *lastBytes = now;
+            *lastTime = t;
+        }
     };
     auto r = http_.download(url, headers, partPath, progress, cancel_);
 
@@ -294,11 +332,51 @@ bool DownloadManager::runNext() {
         removeAll(videoPath(job.itemId));
         std::rename(partPath.c_str(), videoPath(job.itemId).c_str());
         d->status = DownloadStatus::Completed;
+        d->speedBps = 0;
         d->bytes = fileSize(videoPath(job.itemId));
     }
     cancel_ = false;
     saveLocked();
     return true;
+}
+
+void DownloadManager::retryFailed() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& d : items_)
+        if (d.status == DownloadStatus::Failed) {
+            d.status = DownloadStatus::Queued;
+            d.error.clear();
+        }
+    saveLocked();
+}
+
+void DownloadManager::moveUp(const std::string& itemId) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = std::find_if(items_.begin(), items_.end(), [&](const DownloadItem& d) { return d.itemId == itemId; });
+    if (it == items_.end() || it->status != DownloadStatus::Queued) return;
+    // Swap with the previous queued item (the running one stays first).
+    auto prev = std::find_if(std::make_reverse_iterator(it), items_.rend(),
+                             [](const DownloadItem& d) { return d.status == DownloadStatus::Queued; });
+    if (prev == items_.rend()) return;
+    std::iter_swap(it, prev);
+    saveLocked();
+}
+
+void DownloadManager::setPaused(bool paused) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    paused_ = paused;
+}
+
+bool DownloadManager::paused() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return paused_;
+}
+
+bool DownloadManager::active() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!activeId_.empty()) return true;
+    if (paused_) return false;
+    return std::any_of(items_.begin(), items_.end(), [](const DownloadItem& d) { return d.status == DownloadStatus::Queued; });
 }
 
 bool DownloadManager::hasPending() const {
