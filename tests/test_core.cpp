@@ -558,3 +558,49 @@ TEST_CASE("downloads save the show poster and intro timings for offline use") {
     again.load();
     CHECK(again.find("e1")->introEndTicks == 1300000000);
 }
+
+TEST_CASE("responses are saved and served from the SD cache without the network") {
+    TempDir dir;
+    Config c = loggedInConfig();
+    FakeHttp http;
+    int calls = 0;
+    http.handler = [&](const FakeHttp::Call&) -> HttpResponse {
+        ++calls;
+        return {200, R"({"Items":[{"Id":"s1","Name":"Show","Type":"Series"}],"TotalRecordCount":1})", ""};
+    };
+    ResponseCache cache(dir.path + "/api");
+    Client client(http, c, "t");
+    client.setCache(&cache);
+    ItemQuery q;
+    q.parentId = "lib";
+
+    CHECK_FALSE(client.items(q, Source::Cache).ok);  // nothing saved yet
+    CHECK(calls == 0);
+    REQUIRE(client.items(q).ok);
+    CHECK(calls == 1);
+    auto cached = client.items(q, Source::Cache);
+    REQUIRE(cached.ok);
+    CHECK(calls == 1);
+    CHECK(cached.value.items.at(0).name == "Show");
+
+    // A different query is a different cache entry.
+    q.sortBy = "DateCreated";
+    CHECK_FALSE(client.items(q, Source::Cache).ok);
+}
+
+TEST_CASE("lists skip media streams; episodes and details keep them") {
+    Config c = loggedInConfig();
+    FakeHttp http;
+    std::vector<std::string> urls;
+    http.handler = [&](const FakeHttp::Call& call) -> HttpResponse {
+        urls.push_back(call.url);
+        return {200, R"({"Items":[]})", ""};
+    };
+    Client client(http, c, "t");
+    client.items(ItemQuery{});
+    client.nextUp();
+    client.episodes("s1");
+    CHECK_FALSE(contains(urls.at(0), "MediaSources"));
+    CHECK_FALSE(contains(urls.at(1), "MediaSources"));
+    CHECK(contains(urls.at(2), "MediaSources"));
+}

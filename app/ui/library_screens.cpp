@@ -44,19 +44,23 @@ protected:
     virtual std::string subtitle() const { return ""; }
 
     /// `job` runs on the worker thread: it must capture copies, never `this`.
-    void load(std::function<ItemsResult()> job) {
+    void load(std::function<ItemsResult(jelly::Source)> job) {
         page_.setLoading(true);
-        async<ItemsResult>(std::move(job), [this](ItemsResult r) {
+        loadCachedThenFresh<std::vector<jelly::Item>>(std::move(job), [this](ItemsResult r, bool) {
             page_.setLoading(false);
             if (!r.ok) {
                 page_.setEmptyText(r.error);
                 page_.setItems({});
                 return;
             }
-            page_.setItems(std::move(r.value));
-            onLoaded();
+            page_.setItems(std::move(r.value));  // keeps the selection when the fresh list arrives
+            if (!loadedOnce_) {
+                loadedOnce_ = true;
+                onLoaded();
+            }
         });
     }
+    bool loadedOnce_ = false;
     virtual void onLoaded() {}
 
     std::string title_, crumb_;
@@ -139,12 +143,12 @@ private:
         q.sortBy = SORTS[sort_].sortBy;
         q.sortOrder = SORTS[sort_].order;
         q.filters = SORTS[sort_].filters;
-        load([q]() mutable {
+        load([q](jelly::Source src) mutable {
             // Large libraries: pages of 200, up to 2000 items.
             std::vector<jelly::Item> all;
             for (int page = 0; page < 10; ++page) {
                 q.startIndex = static_cast<int>(all.size());
-                auto r = App::get().client->items(q);
+                auto r = App::get().client->items(q, src);
                 if (!r.ok) return page == 0 ? ItemsResult::failure(r.error) : ItemsResult::success(std::move(all));
                 all.insert(all.end(), r.value.items.begin(), r.value.items.end());
                 if (static_cast<int>(all.size()) >= r.value.totalRecordCount || r.value.items.empty()) break;
@@ -163,7 +167,7 @@ class SeasonsScreen : public CoverScreen {
 public:
     explicit SeasonsScreen(jelly::Item series)
         : CoverScreen(series.name, "Shows \xE2\x80\xBA " + series.name, options(series)), series_(std::move(series)) {
-        load([id = series_.id] { return App::get().client->seasons(id); });
+        load([id = series_.id](jelly::Source src) { return App::get().client->seasons(id, src); });
     }
 
 private:
@@ -208,7 +212,9 @@ public:
     EpisodesScreen(jelly::Item series, jelly::Item season)
         : CoverScreen(series.name + " \xC2\xB7 " + season.name, "Shows \xE2\x80\xBA " + series.name + " \xE2\x80\xBA " + season.name,
                       options(series, season)) {
-        load([sid = series.id, season = season.id] { return App::get().client->episodes(sid, season); });
+        load([sid = series.id, season = season.id](jelly::Source src) {
+            return App::get().client->episodes(sid, season, src);
+        });
     }
 
 private:

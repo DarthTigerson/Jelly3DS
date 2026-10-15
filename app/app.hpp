@@ -75,6 +75,7 @@ public:
     jelly::Config config;
     std::unique_ptr<jelly::CurlHttp> http;
     std::unique_ptr<jelly::Client> client;
+    std::unique_ptr<jelly::ResponseCache> responseCache;
     std::unique_ptr<jelly::ProgressStore> progress;
     std::unique_ptr<jelly::DownloadManager> downloads;
     std::unique_ptr<jelly::SyncEngine> sync;
@@ -149,6 +150,28 @@ protected:
                 if (token && *token) done(std::move(*result));
             });
         });
+    }
+
+    /// Shows the copy saved on the SD card straight away, then the server's answer when it arrives.
+    /// `done(result, fresh)` may run twice. `job` runs on the worker thread: capture copies, never `this`.
+    template <typename T>
+    void loadCachedThenFresh(std::function<jelly::Result<T>(jelly::Source)> job,
+                             std::function<void(jelly::Result<T>, bool)> done) {
+        async<jelly::Result<T>>([job] { return job(jelly::Source::Cache); },
+                                [this, job, done](jelly::Result<T> cached) {
+                                    bool had = cached.ok;
+                                    if (had) done(std::move(cached), false);
+                                    if (!App::get().online()) {
+                                        if (!had)
+                                            done(jelly::Result<T>::failure("Offline - not saved on this console yet"), true);
+                                        return;
+                                    }
+                                    async<jelly::Result<T>>([job] { return job(jelly::Source::Network); },
+                                                            [done, had](jelly::Result<T> fresh) {
+                                                                // Keep showing the saved list if the server fails.
+                                                                if (fresh.ok || !had) done(std::move(fresh), true);
+                                                            });
+                                });
     }
 
     std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);

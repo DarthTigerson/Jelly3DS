@@ -1,5 +1,6 @@
 #pragma once
 
+#include "jelly/cache.hpp"
 #include "jelly/config.hpp"
 #include "jelly/models.hpp"
 #include "jelly/platform.hpp"
@@ -40,6 +41,9 @@ struct ItemPage {
     int totalRecordCount = 0;
 };
 
+/// Where a list request is answered from: the server (and the answer is saved), or only the saved copy.
+enum class Source { Network, Cache };
+
 /// Thread-safe Jellyfin REST client. Credentials are read from the shared Config under a mutex.
 class Client {
 public:
@@ -50,14 +54,19 @@ public:
     /// True when the server answers and the stored token is still valid.
     Result<bool> ping();
 
-    Result<std::vector<Item>> views();
-    Result<ItemPage> items(const ItemQuery& q);
-    Result<std::vector<Item>> seasons(const std::string& seriesId);
-    Result<std::vector<Item>> episodes(const std::string& seriesId, const std::string& seasonId = "");
-    Result<std::vector<Item>> resumeItems();
-    Result<std::vector<Item>> nextUp();
+    /// Saved responses (optional): every successful list request is stored, Source::Cache reads it back.
+    void setCache(ResponseCache* cache) { cache_ = cache; }
+
+    Result<std::vector<Item>> views(Source src = Source::Network);
+    Result<ItemPage> items(const ItemQuery& q, Source src = Source::Network);
+    Result<std::vector<Item>> seasons(const std::string& seriesId, Source src = Source::Network);
+    /// Episodes include media streams (audio / subtitle tracks) so whole seasons can be downloaded.
+    Result<std::vector<Item>> episodes(const std::string& seriesId, const std::string& seasonId = "",
+                                       Source src = Source::Network);
+    Result<std::vector<Item>> resumeItems(Source src = Source::Network);
+    Result<std::vector<Item>> nextUp(Source src = Source::Network);
     /// Newest additions to a library (what Jellyfin's home shows as "Latest").
-    Result<std::vector<Item>> latest(const std::string& parentId, int limit);
+    Result<std::vector<Item>> latest(const std::string& parentId, int limit, Source src = Source::Network);
     Result<Item> item(const std::string& id);
 
     Result<bool> reportStart(const std::string& itemId, const std::string& mediaSourceId, int64_t positionTicks,
@@ -82,15 +91,17 @@ public:
 
 private:
     std::string authValue(const std::string& token) const;
-    Result<nlohmann::json> getJson(const std::string& pathAndQuery);
+    Result<nlohmann::json> getJson(const std::string& pathAndQuery, Source src = Source::Network);
     Result<bool> postJson(const std::string& path, const nlohmann::json& body);
-    std::string fields() const;
+    /// List fields; `withMedia` adds MediaSources (large: only where tracks are needed).
+    std::string fields(bool withMedia = false) const;
     std::string uid() const;
 
     IHttp& http_;
     Config& config_;
     std::string deviceName_;
     mutable std::mutex mutex_;
+    ResponseCache* cache_ = nullptr;
 };
 
 }  // namespace jelly

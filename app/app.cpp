@@ -54,13 +54,15 @@ bool App::init() {
     curlOptions.fileBufferSize = 256 * 1024;
     http = std::make_unique<jelly::CurlHttp>(curlOptions);
     client = std::make_unique<jelly::Client>(*http, config, isNew3ds ? "New Nintendo 3DS" : "Nintendo 3DS");
+    responseCache = std::make_unique<jelly::ResponseCache>(std::string(DATA_DIR) + "/cache/api");
+    client->setCache(responseCache.get());
     progress = std::make_unique<jelly::ProgressStore>(std::string(DATA_DIR) + "/progress.json");
     progress->load();
     downloads = std::make_unique<jelly::DownloadManager>(*client, *http, std::string(DATA_DIR) + "/downloads");
     downloads->load();
     sync = std::make_unique<jelly::SyncEngine>(*client, *progress, *downloads);
 
-    images.start(http.get(), [this] { return client->authHeaders(); });
+    images.start(http.get(), [this] { return client->authHeaders(); }, std::string(DATA_DIR) + "/cache/img");
     tasks.start();
     downloadThread_.start([this] { downloadLoop(); }, 0x33, -2, 128 * 1024);
     aptHook(&aptCookie_, aptHookCallback, this);

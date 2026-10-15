@@ -44,7 +44,7 @@ ImageCache::Source posterFor(const jelly::Item& item, int w, int h) {
     auto st = dm.status(item.id);
     if (st && (*st == DownloadStatus::Completed || *st == DownloadStatus::Downloading)) {
         s.path = dm.thumbPath(item.id);
-    } else if (!tag.empty() && App::get().online()) {
+    } else if (!tag.empty()) {  // served from the SD image cache when offline
         s.url = App::get().client->imageUrl(id, tag, w * 2, h * 2);
     }
     s.key = id + "@" + std::to_string(w) + "x" + std::to_string(h);
@@ -66,7 +66,7 @@ static ImageCache::Source remoteImage(const std::string& id, const std::string& 
                                       int h) {
     ImageCache::Source s;
     s.key = id + "/" + type + "@" + std::to_string(w) + "x" + std::to_string(h);
-    if (App::get().online()) s.url = App::get().client->imageUrl(id, tag, w, h, type);
+    s.url = App::get().client->imageUrl(id, tag, w, h, type);
     s.maxW = w;
     s.maxH = h;
     return s;
@@ -312,7 +312,7 @@ void openItemMenu(const jelly::Item& item, std::vector<MenuOption> extra) {
     }
     auto d = a.downloads->find(item.id);
     if (!d) {
-        opts.push_back({item.type == "Episode" ? "Download episode" : "Download", [item] { App::get().push(makeDownloadOptions({item})); },
+        opts.push_back({item.type == "Episode" ? "Download episode" : "Download", [item] { downloadItems({item}); },
                         a.online()});
     } else if (d->status == DownloadStatus::Completed) {
         std::string id = item.id;
@@ -345,7 +345,22 @@ void downloadItems(std::vector<jelly::Item> items) {
         App::get().toast("Already downloaded");
         return;
     }
-    App::get().push(makeDownloadOptions(std::move(todo)));
+    // Lists are fetched without track details (much faster); get them now for the audio/subtitle choice.
+    bool needTracks = std::any_of(todo.begin(), todo.end(), [](const jelly::Item& i) { return i.mediaSources.empty(); });
+    if (!needTracks || !App::get().online()) {
+        App::get().push(makeDownloadOptions(std::move(todo)));
+        return;
+    }
+    std::vector<std::string> ids;
+    for (const auto& i : todo) ids.push_back(i.id);
+    App::get().tasks.run([todo, ids]() mutable {
+        auto r = App::get().client->itemsByIds(ids);
+        if (r.ok)
+            for (auto& item : todo)
+                for (const auto& full : r.value)
+                    if (full.id == item.id) item.mediaSources = full.mediaSources;
+        App::get().tasks.post([todo]() mutable { App::get().push(makeDownloadOptions(std::move(todo))); });
+    });
 }
 
 void downloadSeries(const std::string& seriesId, const std::string& seasonId) {

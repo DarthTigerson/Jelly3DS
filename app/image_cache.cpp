@@ -1,6 +1,10 @@
 #include "image_cache.hpp"
 
+#include "jelly/cache.hpp"
 #include "jelly/util.hpp"
+
+#include <cstdio>
+#include <filesystem>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
@@ -10,8 +14,10 @@
 
 namespace app {
 
-void ImageCache::start(jelly::IHttp* http, std::function<jelly::Headers()> headers) {
+void ImageCache::start(jelly::IHttp* http, std::function<jelly::Headers()> headers, std::string diskDir) {
     http_ = http;
+    diskDir_ = std::move(diskDir);
+    if (!diskDir_.empty()) jelly::makeDirs(diskDir_);
     headers_ = std::move(headers);
     stopping_ = false;
     thread_.start([this] { loop(); }, 0x32, -2, 96 * 1024);
@@ -39,8 +45,14 @@ const Texture* ImageCache::get(const Source& src) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = entries_.find(src.key);
     if (it != entries_.end()) {
-        lru_.splice(lru_.begin(), lru_, it->second.lru);
-        return it->second.failed ? nullptr : it->second.tex.get();
+        // A failed load (offline, server hiccup) is retried after 30 s rather than staying blank.
+        if (it->second.failed && osGetTime() - it->second.failedAt > 30000) {
+            lru_.erase(it->second.lru);
+            entries_.erase(it);
+        } else {
+            lru_.splice(lru_.begin(), lru_, it->second.lru);
+            return it->second.failed ? nullptr : it->second.tex.get();
+        }
     }
     if (!pending_.count(src.key)) {
         pending_[src.key] = true;
@@ -65,12 +77,16 @@ void ImageCache::pump() {
         Entry e;
         if (d.pixels.empty()) {
             e.failed = true;
+            e.failedAt = osGetTime();
         } else {
             e.tex = std::make_unique<Texture>();
-            if (e.tex->create(d.w, d.h))
+            if (e.tex->create(d.w, d.h)) {
                 e.tex->uploadRgb565(d.pixels.data(), d.w, d.h);
-            else
+            } else {
+                e.tex.reset();
                 e.failed = true;
+                e.failedAt = osGetTime();
+            }
         }
         std::lock_guard<std::mutex> lock(mutex_);
         pending_.erase(d.key);
@@ -87,9 +103,70 @@ void ImageCache::pump() {
     }
 }
 
+bool ImageCache::loadDisk(const std::string& file, Decoded& out) {
+    FILE* f = std::fopen(file.c_str(), "rb");
+    if (!f) return false;
+    uint16_t wh[2] = {0, 0};
+    bool ok = std::fread(wh, sizeof(wh), 1, f) == 1 && wh[0] > 0 && wh[1] > 0 && wh[0] <= 1024 && wh[1] <= 1024;
+    if (ok) {
+        out.w = wh[0];
+        out.h = wh[1];
+        out.pixels.resize(static_cast<size_t>(out.w) * out.h);
+        ok = std::fread(out.pixels.data(), 2, out.pixels.size(), f) == out.pixels.size();
+    }
+    std::fclose(f);
+    if (!ok) out.pixels.clear();
+    return ok;
+}
+
+void ImageCache::saveDisk(const std::string& file, const Decoded& d) {
+    std::string tmp = file + ".tmp";
+    FILE* f = std::fopen(tmp.c_str(), "wb");
+    if (!f) return;
+    uint16_t wh[2] = {static_cast<uint16_t>(d.w), static_cast<uint16_t>(d.h)};
+    bool ok = std::fwrite(wh, sizeof(wh), 1, f) == 1 && std::fwrite(d.pixels.data(), 2, d.pixels.size(), f) == d.pixels.size();
+    std::fclose(f);
+    if (ok)
+        std::rename(tmp.c_str(), file.c_str());
+    else
+        std::remove(tmp.c_str());
+}
+
+/// Keeps the SD image cache under 64 MB by deleting the least recently written files.
+void ImageCache::pruneDisk() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    std::vector<std::pair<fs::file_time_type, std::pair<std::string, uintmax_t>>> files;
+    uintmax_t total = 0;
+    for (const auto& e : fs::directory_iterator(diskDir_, ec)) {
+        if (!e.is_regular_file(ec)) continue;
+        uintmax_t size = e.file_size(ec);
+        total += size;
+        files.push_back({e.last_write_time(ec), {e.path().string(), size}});
+    }
+    const uintmax_t limit = 64ull * 1024 * 1024, target = 48ull * 1024 * 1024;
+    if (total <= limit) return;
+    std::sort(files.begin(), files.end());
+    for (const auto& f : files) {
+        if (total <= target) break;
+        fs::remove(f.second.first, ec);
+        total -= f.second.second;
+    }
+}
+
 ImageCache::Decoded ImageCache::decode(const Source& src) {
     Decoded out;
     out.key = src.key;
+    // Decoded pictures are kept on the SD card: next time there is no download and no JPEG decode.
+    // The URL carries Jellyfin's image tag, so changed artwork gets a new file automatically.
+    std::string diskFile;
+    if (!diskDir_.empty()) {
+        diskFile = diskDir_ + "/" +
+                   jelly::hashName((src.path.empty() ? src.url : src.path) + "@" + std::to_string(src.maxW) + "x" +
+                                   std::to_string(src.maxH)) +
+                   ".565";
+        if (loadDisk(diskFile, out)) return out;
+    }
     std::string bytes;
     if (!src.path.empty()) {
         if (!jelly::readFile(src.path, bytes)) return out;
@@ -130,10 +207,12 @@ ImageCache::Decoded ImageCache::decode(const Source& src) {
         }
     }
     stbi_image_free(rgb);
+    if (!diskFile.empty()) saveDisk(diskFile, out);
     return out;
 }
 
 void ImageCache::loop() {
+    if (!diskDir_.empty()) pruneDisk();
     for (;;) {
         Source src;
         {

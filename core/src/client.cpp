@@ -51,15 +51,24 @@ std::string Client::deviceId() const {
     return config_.deviceId;
 }
 
-std::string Client::fields() const {
-    return "Overview,MediaSources,ChildCount,ProductionYear,ParentId,Genres,OfficialRating";
+std::string Client::fields(bool withMedia) const {
+    std::string f = "Overview,ChildCount,ProductionYear,ParentId,Genres,OfficialRating";
+    return withMedia ? f + ",MediaSources" : f;
 }
 
-Result<nlohmann::json> Client::getJson(const std::string& pathAndQuery) {
-    auto r = http_.get(server() + pathAndQuery, authHeaders());
-    if (!r.ok()) return Result<nlohmann::json>::failure(describe(r));
-    auto j = nlohmann::json::parse(r.body, nullptr, false);
+Result<nlohmann::json> Client::getJson(const std::string& pathAndQuery, Source src) {
+    const std::string key = server() + pathAndQuery;
+    std::string body;
+    if (src == Source::Cache) {
+        if (!cache_ || !cache_->get(key, body)) return Result<nlohmann::json>::failure("Not cached");
+    } else {
+        auto r = http_.get(server() + pathAndQuery, authHeaders());
+        if (!r.ok()) return Result<nlohmann::json>::failure(describe(r));
+        body = std::move(r.body);
+    }
+    auto j = nlohmann::json::parse(body, nullptr, false);
     if (j.is_discarded()) return Result<nlohmann::json>::failure("Invalid JSON from server");
+    if (src == Source::Network && cache_ && pathAndQuery.rfind("/Users/Me", 0) != 0) cache_->put(key, body);
     return Result<nlohmann::json>::success(std::move(j));
 }
 
@@ -115,13 +124,13 @@ std::string Client::uid() const {
     return config_.userId;
 }
 
-Result<std::vector<Item>> Client::views() {
-    auto r = getJson("/UserViews?" + buildQuery({{"userId", uid()}}));
+Result<std::vector<Item>> Client::views(Source src) {
+    auto r = getJson("/UserViews?" + buildQuery({{"userId", uid()}}), src);
     if (!r.ok) return Result<std::vector<Item>>::failure(r.error);
     return Result<std::vector<Item>>::success(r.value.value("Items", nlohmann::json::array()).get<std::vector<Item>>());
 }
 
-Result<ItemPage> Client::items(const ItemQuery& q) {
+Result<ItemPage> Client::items(const ItemQuery& q, Source src) {
     std::vector<std::pair<std::string, std::string>> params = {
         {"userId", uid()},
         {"fields", fields()},
@@ -137,7 +146,7 @@ Result<ItemPage> Client::items(const ItemQuery& q) {
     if (!q.includeItemTypes.empty()) params.emplace_back("includeItemTypes", q.includeItemTypes);
     if (q.recursive) params.emplace_back("recursive", "true");
     if (!q.searchTerm.empty()) params.emplace_back("searchTerm", q.searchTerm);
-    auto r = getJson("/Items?" + buildQuery(params));
+    auto r = getJson("/Items?" + buildQuery(params), src);
     if (!r.ok) return Result<ItemPage>::failure(r.error);
     ItemPage page;
     page.items = r.value.value("Items", nlohmann::json::array()).get<std::vector<Item>>();
@@ -145,40 +154,41 @@ Result<ItemPage> Client::items(const ItemQuery& q) {
     return Result<ItemPage>::success(std::move(page));
 }
 
-Result<std::vector<Item>> Client::seasons(const std::string& seriesId) {
-    auto r = getJson("/Shows/" + seriesId + "/Seasons?" + buildQuery({{"userId", uid()}, {"fields", fields()}}));
+Result<std::vector<Item>> Client::seasons(const std::string& seriesId, Source src) {
+    auto r = getJson("/Shows/" + seriesId + "/Seasons?" + buildQuery({{"userId", uid()}, {"fields", fields()}}), src);
     if (!r.ok) return Result<std::vector<Item>>::failure(r.error);
     return Result<std::vector<Item>>::success(r.value.value("Items", nlohmann::json::array()).get<std::vector<Item>>());
 }
 
-Result<std::vector<Item>> Client::episodes(const std::string& seriesId, const std::string& seasonId) {
-    std::vector<std::pair<std::string, std::string>> params = {{"userId", uid()}, {"fields", fields()}};
+Result<std::vector<Item>> Client::episodes(const std::string& seriesId, const std::string& seasonId, Source src) {
+    std::vector<std::pair<std::string, std::string>> params = {{"userId", uid()}, {"fields", fields(true)}};
     if (!seasonId.empty()) params.emplace_back("seasonId", seasonId);
-    auto r = getJson("/Shows/" + seriesId + "/Episodes?" + buildQuery(params));
+    auto r = getJson("/Shows/" + seriesId + "/Episodes?" + buildQuery(params), src);
     if (!r.ok) return Result<std::vector<Item>>::failure(r.error);
     return Result<std::vector<Item>>::success(r.value.value("Items", nlohmann::json::array()).get<std::vector<Item>>());
 }
 
-Result<std::vector<Item>> Client::resumeItems() {
+Result<std::vector<Item>> Client::resumeItems(Source src) {
     auto params = buildQuery({{"userId", uid()}, {"mediaTypes", "Video"}, {"fields", fields()}, {"limit", "20"}});
-    auto r = getJson("/UserItems/Resume?" + params);
-    if (!r.ok) r = getJson("/Users/" + uid() + "/Items/Resume?" + params);  // servers before 10.9
+    auto r = getJson("/UserItems/Resume?" + params, src);
+    if (!r.ok && src == Source::Network) r = getJson("/Users/" + uid() + "/Items/Resume?" + params);  // servers before 10.9
     if (!r.ok) return Result<std::vector<Item>>::failure(r.error);
     return Result<std::vector<Item>>::success(r.value.value("Items", nlohmann::json::array()).get<std::vector<Item>>());
 }
 
-Result<std::vector<Item>> Client::nextUp() {
-    auto r = getJson("/Shows/NextUp?" + buildQuery({{"userId", uid()}, {"fields", fields()}, {"limit", "20"}}));
+Result<std::vector<Item>> Client::nextUp(Source src) {
+    auto r = getJson("/Shows/NextUp?" + buildQuery({{"userId", uid()}, {"fields", fields()}, {"limit", "20"}}), src);
     if (!r.ok) return Result<std::vector<Item>>::failure(r.error);
     return Result<std::vector<Item>>::success(r.value.value("Items", nlohmann::json::array()).get<std::vector<Item>>());
 }
 
-Result<std::vector<Item>> Client::latest(const std::string& parentId, int limit) {
+Result<std::vector<Item>> Client::latest(const std::string& parentId, int limit, Source src) {
     auto r = getJson("/Items/Latest?" + buildQuery({{"userId", uid()},
                                                     {"parentId", parentId},
                                                     {"limit", std::to_string(limit)},
                                                     {"fields", fields()},
-                                                    {"groupItems", "true"}}));
+                                                    {"groupItems", "true"}}),
+                     src);
     if (!r.ok) return Result<std::vector<Item>>::failure(r.error);
     // This endpoint returns a bare array, not {"Items": [...]}.
     if (!r.value.is_array()) return Result<std::vector<Item>>::success({});
@@ -197,7 +207,7 @@ Result<std::pair<int64_t, int64_t>> Client::introSegment(const std::string& item
 }
 
 Result<Item> Client::item(const std::string& id) {
-    auto r = getJson("/Items/" + id + "?" + buildQuery({{"userId", uid()}}));
+    auto r = getJson("/Items/" + id + "?" + buildQuery({{"userId", uid()}, {"fields", fields(true)}}));
     if (!r.ok) r = getJson("/Users/" + uid() + "/Items/" + id);  // servers before 10.9
     if (!r.ok) return Result<Item>::failure(r.error);
     return Result<Item>::success(r.value.get<Item>());
@@ -248,7 +258,7 @@ Result<bool> Client::updateUserData(const std::string& itemId, int64_t positionT
 Result<std::vector<Item>> Client::itemsByIds(const std::vector<std::string>& ids) {
     std::string joined;
     for (const auto& id : ids) joined += (joined.empty() ? "" : ",") + id;
-    auto r = getJson("/Items?" + buildQuery({{"userId", uid()}, {"ids", joined}, {"fields", fields()}}));
+    auto r = getJson("/Items?" + buildQuery({{"userId", uid()}, {"ids", joined}, {"fields", fields(true)}}));
     if (!r.ok) return Result<std::vector<Item>>::failure(r.error);
     return Result<std::vector<Item>>::success(r.value.value("Items", nlohmann::json::array()).get<std::vector<Item>>());
 }

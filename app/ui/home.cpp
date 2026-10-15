@@ -175,13 +175,13 @@ private:
     }
 
     void requestLatest(const std::string& id) {
-        if (latest_.count(id) || latestLoading_[id] || !App::get().online()) return;
+        if (latest_.count(id) || latestLoading_[id]) return;
         latestLoading_[id] = true;
-        async<jelly::Result<std::vector<jelly::Item>>>(
-            [id] { return App::get().client->latest(id, 5); },
-            [this, id](jelly::Result<std::vector<jelly::Item>> r) {
-                latestLoading_[id] = false;
-                latest_[id] = r.ok ? std::move(r.value) : std::vector<jelly::Item>{};
+        loadCachedThenFresh<std::vector<jelly::Item>>(
+            [id](jelly::Source src) { return App::get().client->latest(id, 5, src); },
+            [this, id](jelly::Result<std::vector<jelly::Item>> r, bool fresh) {
+                if (fresh) latestLoading_[id] = false;
+                if (r.ok || !latest_.count(id)) latest_[id] = r.ok ? std::move(r.value) : std::vector<jelly::Item>{};
             });
     }
 
@@ -289,59 +289,45 @@ private:
     // --- Continue / Libraries -----------------------------------------------------------------
 
     void loadContinue() {
-        auto& a = App::get();
-        if (!a.online()) {
-            continue_.setLoading(false);
-            continue_.setEmptyText("Offline - your downloads are in the Downloads tab");
-            continue_.setItems({});
-            return;
-        }
         continue_.setLoading(true);
-        async<std::vector<jelly::Item>>(
-            [] {
+        loadCachedThenFresh<std::vector<jelly::Item>>(
+            [](jelly::Source src) {
                 auto& c = *App::get().client;
-                std::vector<jelly::Item> out;
-                auto resume = c.resumeItems();
-                if (resume.ok) out = resume.value;
-                auto next = c.nextUp();
+                auto resume = c.resumeItems(src);
+                auto next = c.nextUp(src);
+                if (!resume.ok && !next.ok) return jelly::Result<std::vector<jelly::Item>>::failure(resume.error);
+                std::vector<jelly::Item> out = resume.ok ? resume.value : std::vector<jelly::Item>{};
                 if (next.ok)
                     for (auto& i : next.value)
                         if (std::none_of(out.begin(), out.end(), [&](const jelly::Item& x) { return x.id == i.id; }))
                             out.push_back(i);
-                return out;
+                return jelly::Result<std::vector<jelly::Item>>::success(std::move(out));
             },
-            [this](std::vector<jelly::Item> items) {
-                continue_.setEmptyText("Nothing in progress - start an episode and it shows up here");
-                continue_.setItems(std::move(items));
+            [this](jelly::Result<std::vector<jelly::Item>> r, bool) {
                 continue_.setLoading(false);
+                continue_.setEmptyText(r.ok ? "Nothing in progress - start an episode and it shows up here"
+                                            : "Offline - your downloads are in the Downloads tab");
+                continue_.setItems(r.ok ? std::move(r.value) : std::vector<jelly::Item>{});
             });
     }
 
     void loadLibraries() {
-        auto& a = App::get();
-        items_.clear();
-        grid_.setItems({});
-        if (!a.online()) {
-            loading_ = false;
-            grid_.emptyText = "Offline - libraries need your server";
-            return;
-        }
-        loading_ = true;
-        async<jelly::Result<std::vector<jelly::Item>>>([] { return App::get().client->views(); },
-                                                       [this](jelly::Result<std::vector<jelly::Item>> r) {
-                                                           if (tab_ != LIBRARIES) return;
-                                                           loading_ = false;
-                                                           if (!r.ok) {
-                                                               grid_.emptyText = r.error;
-                                                               return;
-                                                           }
-                                                           items_ = std::move(r.value);
-                                                           std::vector<ListRow> rows;
-                                                           for (size_t i = 0; i < items_.size(); ++i)
-                                                               rows.push_back(itemRow(items_[i], static_cast<int>(i)));
-                                                           grid_.emptyText = "No libraries";
-                                                           grid_.setItems(std::move(rows));
-                                                       });
+        loading_ = items_.empty();
+        loadCachedThenFresh<std::vector<jelly::Item>>(
+            [](jelly::Source src) { return App::get().client->views(src); },
+            [this](jelly::Result<std::vector<jelly::Item>> r, bool) {
+                loading_ = false;
+                if (tab_ != LIBRARIES) return;
+                if (!r.ok) {
+                    grid_.emptyText = r.error;
+                    return;
+                }
+                items_ = std::move(r.value);
+                std::vector<ListRow> rows;
+                for (size_t i = 0; i < items_.size(); ++i) rows.push_back(itemRow(items_[i], static_cast<int>(i)));
+                grid_.emptyText = "No libraries";
+                grid_.setItems(std::move(rows));
+            });
     }
 
     ListRow itemRow(const jelly::Item& item, int tag) {
