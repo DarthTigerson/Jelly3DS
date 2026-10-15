@@ -117,6 +117,11 @@ private:
     bool lidDark_ = false;      // backlights off because the lid closed during a download
     bool screensOff_ = false;   // backlights off on request
     bool ptmSysm_ = false;
+    bool mcuHwc_ = false;
+    bool doneLed_ = false;      // green notification light: queue finished while the lid was shut
+    int completedAtLidClose_ = 0;
+    void setDoneLed(bool on);
+    int completedCount() const;
     u64 nextLidPoll_ = 0;
     void manageSleep();
     Thread downloadThread_;

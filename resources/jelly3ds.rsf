@@ -186,6 +186,7 @@ AccessControlInfo:
     - ir:rst
     - ir:u
     - ir:USER
+    - mcu::HWC
     - mic:u
     - mvd:STD
     - ndm:u

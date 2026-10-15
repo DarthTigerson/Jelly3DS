@@ -47,6 +47,7 @@ bool App::init() {
     gspLcdInit();
     ptmuInit();
     ptmSysm_ = R_SUCCEEDED(ptmSysmInit());
+    mcuHwc_ = R_SUCCEEDED(mcuHwcInit());
     Player::initAudio();
     hidSetRepeatParameters(18, 5);
 
@@ -96,6 +97,8 @@ void App::shutdown() {
     aptSetSleepAllowed(true);
     Player::exitAudio();
     if (lidDark_ || screensOff_) GSPLCD_PowerOnAllBacklights();
+    if (doneLed_) setDoneLed(false);
+    if (mcuHwc_) mcuHwcExit();
     if (ptmSysm_) ptmSysmExit();
     ptmuExit();
     gspLcdExit();
@@ -217,9 +220,33 @@ void App::downloadLoop() {
     }
 }
 
+int App::completedCount() const {
+    int n = 0;
+    for (const auto& d : downloads->items())
+        if (d.status == jelly::DownloadStatus::Completed) ++n;
+    return n;
+}
+
+/// Slow green "breathing" on the notification LED, or off.
+void App::setDoneLed(bool on) {
+    doneLed_ = on;
+    if (!mcuHwc_) return;
+    InfoLedPattern p{};
+    if (on) {
+        p.delay = 0x04;       // 1/4 s per step
+        p.smoothing = 0x60;
+        p.loopDelay = 0x00;   // loop forever
+        for (int i = 0; i < 32; ++i) p.greenPattern[i] = static_cast<u8>(i < 16 ? 40 + i * 13 : 40 + (31 - i) * 13);
+    }
+    MCUHWC_SetInfoLedPattern(&p);
+}
+
 void App::manageSleep() {
     // Sleep mode suspends the app and its Wi-Fi, so while the queue runs the console must stay awake.
-    bool block = online_ && downloads->active();
+    // After it finishes with the lid shut it also stays awake (screens off) to keep the green light on:
+    // in sleep mode the system takes over the notification LED.
+    bool working = online_ && downloads->active();
+    bool block = working || doneLed_;
     if (block != sleepBlocked_) {
         aptSetSleepAllowed(!block);
         sleepBlocked_ = block;
@@ -230,18 +257,27 @@ void App::manageSleep() {
     u8 shell = 1;
     PTMU_GetShellState(&shell);  // 0 = lid closed
     bool closed = shell == 0;
-    if (closed && block && !lidDark_) {
+    if (closed && working && !lidDark_) {
         GSPLCD_PowerOffAllBacklights();
         lidDark_ = true;
-    } else if (!closed && lidDark_) {
+        completedAtLidClose_ = completedCount();
+    } else if (!closed && (lidDark_ || doneLed_)) {
+        // Lid open again: screens back on, light off.
         GSPLCD_PowerOnAllBacklights();
         if (!bottomOn_) GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_BOTTOM);
         lidDark_ = false;
-    } else if (closed && lidDark_ && !block) {
-        // Queue finished with the lid shut: let the console sleep now.
-        GSPLCD_PowerOnAllBacklights();
-        lidDark_ = false;
-        if (ptmSysm_) PTMSYSM_RequestSleep();
+        if (doneLed_) setDoneLed(false);
+    } else if (closed && lidDark_ && !working && !doneLed_) {
+        if (completedCount() > completedAtLidClose_) {
+            setDoneLed(true);  // something finished: green light until the lid opens
+        } else {
+            // Nothing finished (all failed / server gone): just let the console sleep.
+            GSPLCD_PowerOnAllBacklights();
+            lidDark_ = false;
+            aptSetSleepAllowed(true);
+            sleepBlocked_ = false;
+            if (ptmSysm_) PTMSYSM_RequestSleep();
+        }
     }
 }
 
